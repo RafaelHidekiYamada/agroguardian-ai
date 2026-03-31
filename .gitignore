@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+agroguardian.db
+artifacts/*.joblib
+.streamlit/
