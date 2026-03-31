@@ -5,10 +5,10 @@ import os
 
 st.set_page_config(page_title="AgroGuardian AI", layout="wide")
 
-API_URL = "http://127.0.0.1:8000/api/v1/risk/predict"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+API_URL = f"{API_BASE_URL}/api/v1/risk/predict"
 
-# Coloque sua chave da OpenWeather aqui
-OPENWEATHER_API_KEY = os.getenv("6276fa98b6b82a729c0bca923cf8a526")
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
 
 def buscar_clima_automatico(latitude: float, longitude: float):
@@ -16,7 +16,7 @@ def buscar_clima_automatico(latitude: float, longitude: float):
     Busca clima atual no OpenWeather.
     Se falhar, retorna valores padrão para o dashboard continuar funcionando.
     """
-    if not OPENWEATHER_API_KEY or OPENWEATHER_API_KEY == "SUA_CHAVE_AQUI":
+    if not OPENWEATHER_API_KEY:
         return {
             "clima": "sol",
             "chuva_mm": 0,
