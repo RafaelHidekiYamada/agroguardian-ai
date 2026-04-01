@@ -135,9 +135,19 @@ def _recommendation_text(risk_score: float, payload: Dict[str, Any]) -> str:
 
 def _prepare_prediction(payload: TelemetryInput, weather: Dict[str, Any]) -> Dict[str, Any]:
     data = payload.model_dump()
-    data["chuva_mm"] = max(float(data["chuva_mm"]), float(weather.get("rain_mm_1h", 0)) * 3.0)
-    if weather.get("weather_main", "").lower() in {"rain", "drizzle", "thunderstorm", "chuva"}:
+
+    rain_mm = float(weather.get("rain_mm_1h", 0) or 0)
+    weather_main = str(weather.get("weather_main", "")).lower()
+
+    data["chuva_mm"] = max(float(data["chuva_mm"]), rain_mm * 3.0)
+
+    if weather_main in {"rain", "drizzle", "thunderstorm", "chuva"}:
         data["clima"] = "chuva"
+    elif weather_main in {"clouds", "mist", "fog", "nublado"}:
+        data["clima"] = "nublado"
+    elif weather_main in {"clear", "sun", "sol"}:
+        data["clima"] = "sol"
+
     data["solo_instavel"] = int(data["solo_instavel"])
     return data
 

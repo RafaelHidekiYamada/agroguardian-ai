@@ -8,60 +8,6 @@ st.set_page_config(page_title="AgroGuardian AI", layout="wide")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 API_URL = f"{API_BASE_URL}/api/v1/risk/predict"
 
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-
-
-def buscar_clima_automatico(latitude: float, longitude: float):
-    if not OPENWEATHER_API_KEY:
-        return {
-            "clima": "sol",
-            "chuva_mm": 0,
-            "temperatura": None,
-            "origem": "simulado"
-        }
-
-    url = "https://api.openweathermap.org/data/2.5/weather"
-    params = {
-        "lat": latitude,
-        "lon": longitude,
-        "appid": OPENWEATHER_API_KEY,
-        "units": "metric",
-        "lang": "pt_br"
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        descricao = data.get("weather", [{}])[0].get("description", "").lower()
-        chuva_mm = 0
-
-        if "rain" in data:
-            chuva_mm = data["rain"].get("1h", 0) or data["rain"].get("3h", 0) or 0
-
-        clima = "sol"
-        if "chuva" in descricao or "rain" in descricao:
-            clima = "chuva"
-        elif "nublado" in descricao or "cloud" in descricao:
-            clima = "nublado"
-
-        return {
-            "clima": clima,
-            "chuva_mm": int(round(chuva_mm)),
-            "temperatura": data.get("main", {}).get("temp"),
-            "origem": "openweather"
-        }
-
-    except Exception:
-        return {
-            "clima": "sol",
-            "chuva_mm": 0,
-            "temperatura": None,
-            "origem": "fallback"
-        }
-
-
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
 
@@ -82,37 +28,23 @@ solo_instavel = st.sidebar.selectbox("Solo instável", [0, 1])
 latitude = st.sidebar.number_input("Latitude", value=-23.455000, format="%.6f")
 longitude = st.sidebar.number_input("Longitude", value=-46.533000, format="%.6f")
 
-st.sidebar.markdown("---")
-usar_clima_automatico = st.sidebar.checkbox("Usar clima automático", value=True)
+# Valores-base; a API pode enriquecer com clima real
+clima_base = st.sidebar.selectbox("Clima base", ["sol", "nublado", "chuva"], index=0)
+chuva_mm_base = st.sidebar.slider("Chuva base (mm)", 0, 100, 0)
 
 if st.button("Calcular risco"):
-    clima = "sol"
-    chuva_mm = 0
-    temperatura = None
-    origem_clima = "manual"
-
-    if usar_clima_automatico:
-        clima_data = buscar_clima_automatico(float(latitude), float(longitude))
-        clima = clima_data["clima"]
-        chuva_mm = clima_data["chuva_mm"]
-        temperatura = clima_data["temperatura"]
-        origem_clima = clima_data["origem"]
-    else:
-        clima = st.session_state.get("clima_manual", "sol")
-        chuva_mm = 0
-
     dados = {
         "equipment_id": int(equipment_id),
         "farm_id": int(farm_id),
         "region": region,
         "operation_type": operation_type,
-        "clima": clima,
+        "clima": clima_base,
         "umidade_solo": int(umidade_solo),
         "inclinacao": int(inclinacao),
         "distancia_agua": int(distancia_agua),
         "velocidade": int(velocidade),
         "historico_sinistros": int(historico_sinistros),
-        "chuva_mm": int(chuva_mm),
+        "chuva_mm": int(chuva_mm_base),
         "solo_instavel": int(solo_instavel),
         "latitude": float(latitude),
         "longitude": float(longitude)
@@ -143,12 +75,17 @@ if st.button("Calcular risco"):
             st.subheader("Barra de risco")
             st.progress(max(0, min(100, int(risk_score))))
 
-            st.subheader("Clima automático")
-            st.write(f"Origem do clima: **{origem_clima}**")
-            st.write(f"Clima considerado: **{clima}**")
-            st.write(f"Chuva considerada: **{chuva_mm} mm**")
-            if temperatura is not None:
-                st.write(f"Temperatura: **{temperatura} °C**")
+            weather = resultado.get("weather", {})
+            st.subheader("Clima usado na análise")
+            st.write(f"Fonte: **{weather.get('source', 'desconhecida')}**")
+            st.write(f"Condição: **{weather.get('description', 'sem descrição')}**")
+            st.write(f"Temperatura: **{weather.get('temperature', '-')} °C**")
+            st.write(f"Umidade do ar: **{weather.get('humidity', '-')} %**")
+            st.write(f"Vento: **{weather.get('wind_speed', '-')} m/s**")
+            st.write(f"Chuva (1h): **{weather.get('rain_mm_1h', '-')} mm**")
+
+            if weather.get("error"):
+                st.warning(f"Clima externo indisponível. Fallback aplicado: {weather.get('error')}")
 
             st.subheader("Alertas")
             alertas = resultado.get("alerts", [])
@@ -193,9 +130,6 @@ if st.button("Calcular risco"):
 
             st.subheader("Explicação")
             st.json(resultado.get("explanation", {}))
-
-            st.subheader("Clima retornado pela API")
-            st.json(resultado.get("weather", {}))
 
             st.subheader("Resposta completa")
             st.json(resultado)
