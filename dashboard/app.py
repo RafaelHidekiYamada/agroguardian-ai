@@ -10,15 +10,8 @@ API_URL = f"{API_BASE_URL}/api/v1/risk/predict"
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
-DEBUG_TEM_CHAVE = bool(OPENWEATHER_API_KEY)
-DEBUG_TAMANHO_CHAVE = len(OPENWEATHER_API_KEY) if OPENWEATHER_API_KEY else 0
-
 
 def buscar_clima_automatico(latitude: float, longitude: float):
-    """
-    Busca clima atual no OpenWeather.
-    Se falhar, retorna valores padrão para o dashboard continuar funcionando.
-    """
     if not OPENWEATHER_API_KEY:
         return {
             "clima": "sol",
@@ -60,13 +53,12 @@ def buscar_clima_automatico(latitude: float, longitude: float):
             "origem": "openweather"
         }
 
-    except Exception as e:
+    except Exception:
         return {
             "clima": "sol",
             "chuva_mm": 0,
             "temperatura": None,
-            "origem": "fallback",
-            "erro_clima": str(e)
+            "origem": "fallback"
         }
 
 
@@ -98,7 +90,6 @@ if st.button("Calcular risco"):
     chuva_mm = 0
     temperatura = None
     origem_clima = "manual"
-    erro_clima = None
 
     if usar_clima_automatico:
         clima_data = buscar_clima_automatico(float(latitude), float(longitude))
@@ -106,7 +97,6 @@ if st.button("Calcular risco"):
         chuva_mm = clima_data["chuva_mm"]
         temperatura = clima_data["temperatura"]
         origem_clima = clima_data["origem"]
-        erro_clima = clima_data.get("erro_clima")
     else:
         clima = st.session_state.get("clima_manual", "sol")
         chuva_mm = 0
@@ -159,12 +149,6 @@ if st.button("Calcular risco"):
             st.write(f"Chuva considerada: **{chuva_mm} mm**")
             if temperatura is not None:
                 st.write(f"Temperatura: **{temperatura} °C**")
-
-            st.caption(f"DEBUG - chave carregada: {DEBUG_TEM_CHAVE}")
-            st.caption(f"DEBUG - tamanho da chave: {DEBUG_TAMANHO_CHAVE}")
-
-            if erro_clima:
-                st.error(f"Erro ao consultar OpenWeather: {erro_clima}")
 
             st.subheader("Alertas")
             alertas = resultado.get("alerts", [])
