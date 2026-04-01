@@ -159,8 +159,7 @@ with tab1:
         calcular = st.button("Calcular risco", use_container_width=False)
 
     with col_b:
-        st.markdown("### Estado da integração")
-        st.caption(f"API base: {API_BASE_URL}")
+        st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas com IA, clima e telemetria")
 
     if calcular:
         payload = {
