@@ -10,6 +10,9 @@ API_URL = f"{API_BASE_URL}/api/v1/risk/predict"
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
+DEBUG_TEM_CHAVE = bool(OPENWEATHER_API_KEY)
+DEBUG_TAMANHO_CHAVE = len(OPENWEATHER_API_KEY) if OPENWEATHER_API_KEY else 0
+
 
 def buscar_clima_automatico(latitude: float, longitude: float):
     """
@@ -155,8 +158,8 @@ if st.button("Calcular risco"):
             st.write(f"Chuva considerada: **{chuva_mm} mm**")
             if temperatura is not None:
                 st.write(f"Temperatura: **{temperatura} °C**")
-            if erro_clima:
-                st.error(f"Erro ao consultar OpenWeather: {erro_clima}")
+            st.caption(f"DEBUG - chave carregada: {DEBUG_TEM_CHAVE}")
+            st.caption(f"DEBUG - tamanho da chave: {DEBUG_TAMANHO_CHAVE}")
 
 
             st.subheader("Alertas")
