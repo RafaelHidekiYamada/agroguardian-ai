@@ -69,6 +69,7 @@ def buscar_clima_automatico(latitude: float, longitude: float):
             "erro_clima": str(e)
         }
 
+
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
 
@@ -158,9 +159,12 @@ if st.button("Calcular risco"):
             st.write(f"Chuva considerada: **{chuva_mm} mm**")
             if temperatura is not None:
                 st.write(f"Temperatura: **{temperatura} °C**")
+
             st.caption(f"DEBUG - chave carregada: {DEBUG_TEM_CHAVE}")
             st.caption(f"DEBUG - tamanho da chave: {DEBUG_TAMANHO_CHAVE}")
 
+            if erro_clima:
+                st.error(f"Erro ao consultar OpenWeather: {erro_clima}")
 
             st.subheader("Alertas")
             alertas = resultado.get("alerts", [])
@@ -214,10 +218,19 @@ if st.button("Calcular risco"):
 
         else:
             st.error(f"Erro na API: {response.status_code}")
-            try:
-                st.json(response.json())
-            except Exception:
-                st.write(response.text)
+
+            content_type = response.headers.get("content-type", "")
+
+            if "text/html" in content_type:
+                st.warning(
+                    "A API pode estar indisponível temporariamente ou acordando no plano gratuito do Render. "
+                    "Espere alguns segundos e tente novamente."
+                )
+            else:
+                try:
+                    st.json(response.json())
+                except Exception:
+                    st.write(response.text)
 
     except requests.exceptions.RequestException as e:
         st.error(f"Erro de conexão com a API: {e}")
