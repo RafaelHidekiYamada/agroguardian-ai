@@ -10,6 +10,7 @@ st.set_page_config(page_title="AgroGuardian AI", layout="wide")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 PREDICT_URL = f"{API_BASE_URL}/api/v1/risk/predict"
+SIMULATE_URL = f"{API_BASE_URL}/api/v1/simulate"
 SUMMARY_URL = f"{API_BASE_URL}/api/v1/dashboard/summary"
 RANKING_URL = f"{API_BASE_URL}/api/v1/dashboard/ranking"
 TRENDS_URL = f"{API_BASE_URL}/api/v1/dashboard/trends"
@@ -48,17 +49,6 @@ def post_json(url: str, payload: dict) -> tuple[bool, Any]:
         return False, str(e)
 
 
-def flatten_metrics(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        return {}
-
-    flat: dict[str, Any] = {}
-    for key, value in data.items():
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            flat[key] = value
-    return flat
-
-
 def any_to_dataframe(data: Any) -> pd.DataFrame:
     if data is None:
         return pd.DataFrame()
@@ -88,7 +78,6 @@ def extract_trend_dataframe(data: Any) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # tenta encontrar colunas de tempo e valor
     time_candidates = ["date", "data", "timestamp", "periodo", "mes", "dia"]
     value_candidates = [
         "risk_score", "score", "value", "valor", "avg_risk",
@@ -111,6 +100,17 @@ def extract_trend_dataframe(data: Any) -> pd.DataFrame:
     return df
 
 
+def flatten_metrics(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+
+    flat: dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            flat[key] = value
+    return flat
+
+
 def show_api_error(title: str, error_data: Any) -> None:
     st.error(title)
     if isinstance(error_data, (dict, list)):
@@ -119,10 +119,84 @@ def show_api_error(title: str, error_data: Any) -> None:
         st.write(error_data)
 
 
+def render_prediction_result(resultado: dict, latitude: float, longitude: float) -> None:
+    st.success("Predição realizada com sucesso")
+
+    col1, col2, col3 = st.columns(3)
+    risk_score = float(resultado.get("risk_score", 0))
+    col1.metric("Risk Score", resultado.get("risk_score", "-"))
+    col2.metric("Nível de risco", resultado.get("risk_label", "-"))
+    col3.metric("Alerta", resultado.get("alert_level", "-"))
+
+    if risk_score > 70:
+        st.error("Risco alto")
+    elif risk_score > 40:
+        st.warning("Risco médio")
+    else:
+        st.success("Risco baixo")
+
+    st.subheader("Barra de risco")
+    st.progress(max(0, min(100, int(risk_score))))
+
+    weather = resultado.get("weather", {})
+    st.subheader("Clima usado na análise")
+    st.write(f"Fonte: **{weather.get('source', 'desconhecida')}**")
+    st.write(f"Condição: **{weather.get('description', 'sem descrição')}**")
+    st.write(f"Temperatura: **{weather.get('temperature', '-')} °C**")
+    st.write(f"Umidade do ar: **{weather.get('humidity', '-')} %**")
+    st.write(f"Vento: **{weather.get('wind_speed', '-')} m/s**")
+    st.write(f"Chuva (1h): **{weather.get('rain_mm_1h', '-')} mm**")
+
+    if weather.get("error"):
+        st.warning("Clima externo indisponível. O sistema aplicou fallback automático.")
+
+    st.subheader("Alertas")
+    alertas = resultado.get("alerts", [])
+    if alertas:
+        for alerta in alertas:
+            severity = str(alerta.get("severity", "")).lower()
+            message = alerta.get("message", "-")
+
+            if severity == "high":
+                st.error(message)
+            elif severity == "medium":
+                st.warning(message)
+            else:
+                st.info(message)
+    else:
+        st.info("Nenhum alerta retornado.")
+
+    st.subheader("Recomendação")
+    st.info(resultado.get("recommendation", "Sem recomendação"))
+
+    st.subheader("Mapa da operação")
+    mapa_df = pd.DataFrame([{"lat": float(latitude), "lon": float(longitude)}])
+    st.map(mapa_df)
+
+    st.subheader("Gráfico de fatores de risco")
+    explicacao = resultado.get("explanation", {})
+    if explicacao and isinstance(explicacao, dict):
+        grafico_df = pd.DataFrame(
+            {"Fator": list(explicacao.keys()), "Impacto": list(explicacao.values())}
+        ).set_index("Fator")
+        st.bar_chart(grafico_df)
+    else:
+        st.info("A API não retornou fatores suficientes para o gráfico.")
+
+    st.subheader("Rota segura")
+    st.json(resultado.get("safe_route", {}))
+
+    st.subheader("Explicação")
+    st.json(resultado.get("explanation", {}))
+
+    st.subheader("Resposta completa")
+    st.json(resultado)
+
+
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "Operação em tempo real",
         "Resumo executivo",
@@ -130,6 +204,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         "Tendências",
         "Alertas e auditoria",
         "Políticas de alerta",
+        "Simulador de risco",
     ]
 )
 
@@ -139,7 +214,7 @@ with tab1:
     equipment_id = st.sidebar.number_input("ID do equipamento", min_value=1, value=1, step=1)
     farm_id = st.sidebar.number_input("ID da fazenda", min_value=1, value=1, step=1)
     region = st.sidebar.text_input("Região", value="Guarulhos - SP")
-    operation_type = st.sidebar.selectbox("Tipo de operação", ["campo", "transporte"])
+    operation_type = st.sidebar.selectbox("Tipo de operação", ["campo", "transporte", "proximidade_agua"])
 
     umidade_solo = st.sidebar.slider("Umidade do solo", 0, 100, 80)
     inclinacao = st.sidebar.slider("Inclinação do terreno", 0, 90, 12)
@@ -161,7 +236,8 @@ with tab1:
         calcular = st.button("Calcular risco", use_container_width=False)
 
     with col_b:
-        st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas com IA, clima e telemetria")
+        st.markdown("### Estado da integração")
+        st.caption(f"API base: {API_BASE_URL}")
 
     if calcular:
         payload = {
@@ -184,78 +260,7 @@ with tab1:
         ok, resultado = post_json(PREDICT_URL, payload)
 
         if ok:
-            st.success("Predição realizada com sucesso")
-
-            col1, col2, col3 = st.columns(3)
-            risk_score = float(resultado.get("risk_score", 0))
-            col1.metric("Risk Score", resultado.get("risk_score", "-"))
-            col2.metric("Nível de risco", resultado.get("risk_label", "-"))
-            col3.metric("Alerta", resultado.get("alert_level", "-"))
-
-            if risk_score > 70:
-                st.error("Risco alto")
-            elif risk_score > 40:
-                st.warning("Risco médio")
-            else:
-                st.success("Risco baixo")
-
-            st.subheader("Barra de risco")
-            st.progress(max(0, min(100, int(risk_score))))
-
-            weather = resultado.get("weather", {})
-            st.subheader("Clima usado na análise")
-            st.write(f"Fonte: **{weather.get('source', 'desconhecida')}**")
-            st.write(f"Condição: **{weather.get('description', 'sem descrição')}**")
-            st.write(f"Temperatura: **{weather.get('temperature', '-')} °C**")
-            st.write(f"Umidade do ar: **{weather.get('humidity', '-')} %**")
-            st.write(f"Vento: **{weather.get('wind_speed', '-')} m/s**")
-            st.write(f"Chuva (1h): **{weather.get('rain_mm_1h', '-')} mm**")
-
-            if weather.get("error"):
-                st.warning("Clima externo indisponível. O sistema aplicou fallback automático.")
-
-            st.subheader("Alertas")
-            alertas = resultado.get("alerts", [])
-            if alertas:
-                for alerta in alertas:
-                    severity = str(alerta.get("severity", "")).lower()
-                    message = alerta.get("message", "-")
-
-                    if severity == "high":
-                        st.error(message)
-                    elif severity == "medium":
-                        st.warning(message)
-                    else:
-                        st.info(message)
-            else:
-                st.info("Nenhum alerta retornado.")
-
-            st.subheader("Recomendação")
-            st.info(resultado.get("recommendation", "Sem recomendação"))
-
-            st.subheader("Mapa da operação")
-            mapa_df = pd.DataFrame([{"lat": float(latitude), "lon": float(longitude)}])
-            st.map(mapa_df)
-
-            st.subheader("Gráfico de fatores de risco")
-            explicacao = resultado.get("explanation", {})
-            if explicacao and isinstance(explicacao, dict):
-                grafico_df = pd.DataFrame(
-                    {"Fator": list(explicacao.keys()), "Impacto": list(explicacao.values())}
-                ).set_index("Fator")
-                st.bar_chart(grafico_df)
-            else:
-                st.info("A API não retornou fatores suficientes para o gráfico.")
-
-            st.subheader("Rota segura")
-            st.json(resultado.get("safe_route", {}))
-
-            st.subheader("Explicação")
-            st.json(resultado.get("explanation", {}))
-
-            st.subheader("Resposta completa")
-            st.json(resultado)
-
+            render_prediction_result(resultado, latitude, longitude)
         else:
             show_api_error("Erro na API de predição", resultado)
 
@@ -317,7 +322,7 @@ with tab3:
 
             if numeric_cols and object_cols:
                 score_col = numeric_cols[0]
-                label_col = object_cols[0]
+                label_col = next((c for c in object_cols if "name" in c.lower()), object_cols[0])
 
                 chart_df = df_ranking[[label_col, score_col]].copy()
                 chart_df.columns = ["Equipamento", "Score"]
@@ -403,9 +408,10 @@ with tab6:
 
     with st.form("nova_politica"):
         name = st.text_input("Nome da política", value="Nova Política")
-        operation_type = st.selectbox(
-            "Tipo de operação",
-            ["campo", "transporte", "proximidade_agua", "all"]
+        policy_operation_type = st.selectbox(
+            "Tipo de operação da política",
+            ["campo", "transporte", "proximidade_agua", "all"],
+            key="policy_operation_type"
         )
 
         min_risk_alert = st.number_input("Score mínimo para alerta", value=40.0)
@@ -424,7 +430,7 @@ with tab6:
         if submitted:
             payload = {
                 "name": name,
-                "operation_type": operation_type,
+                "operation_type": policy_operation_type,
                 "min_risk_alert": min_risk_alert,
                 "min_risk_block": min_risk_block,
                 "max_speed": max_speed,
@@ -442,3 +448,153 @@ with tab6:
                 st.success("Política criada com sucesso. Atualize a página para visualizar.")
             else:
                 show_api_error("Erro ao criar política", create_data)
+
+with tab7:
+    st.markdown("### Simulador de risco")
+    st.caption("Compare um cenário base com um cenário simulado para tomada de decisão preventiva.")
+
+    sim_col1, sim_col2 = st.columns(2)
+
+    with sim_col1:
+        st.markdown("#### Cenário base")
+
+        sim_equipment_id = st.number_input("ID do equipamento", min_value=1, value=1, step=1, key="sim_equipment_id")
+        sim_farm_id = st.number_input("ID da fazenda", min_value=1, value=1, step=1, key="sim_farm_id")
+        sim_region = st.text_input("Região", value="Guarulhos - SP", key="sim_region")
+        sim_operation_type = st.selectbox(
+            "Tipo de operação",
+            ["campo", "transporte", "proximidade_agua"],
+            key="sim_operation_type"
+        )
+
+        sim_clima = st.selectbox("Clima base", ["sol", "nublado", "chuva"], key="sim_clima")
+        sim_umidade_solo = st.slider("Umidade do solo", 0, 100, 80, key="sim_umidade_solo")
+        sim_inclinacao = st.slider("Inclinação", 0, 90, 12, key="sim_inclinacao")
+        sim_distancia_agua = st.slider("Distância da água", 0, 1000, 20, key="sim_distancia_agua")
+        sim_velocidade = st.slider("Velocidade", 0, 200, 15, key="sim_velocidade")
+        sim_historico = st.slider("Histórico de sinistros", 0, 20, 2, key="sim_historico")
+        sim_chuva_mm = st.slider("Chuva base (mm)", 0, 100, 0, key="sim_chuva_mm")
+        sim_solo_instavel = st.selectbox("Solo instável", [0, 1], key="sim_solo_instavel")
+        sim_latitude = st.number_input("Latitude", value=-23.455000, format="%.6f", key="sim_latitude")
+        sim_longitude = st.number_input("Longitude", value=-46.533000, format="%.6f", key="sim_longitude")
+
+    with sim_col2:
+        st.markdown("#### Cenário simulado")
+
+        scenario_name = st.text_input(
+            "Nome do cenário",
+            value="E se operar amanhã com chuva?",
+            key="scenario_name"
+        )
+
+        sim2_clima = st.selectbox("Clima simulado", ["sol", "nublado", "chuva"], index=2, key="sim2_clima")
+        sim2_umidade_solo = st.slider("Umidade do solo simulada", 0, 100, 90, key="sim2_umidade_solo")
+        sim2_inclinacao = st.slider("Inclinação simulada", 0, 90, 18, key="sim2_inclinacao")
+        sim2_distancia_agua = st.slider("Distância da água simulada", 0, 1000, 10, key="sim2_distancia_agua")
+        sim2_velocidade = st.slider("Velocidade simulada", 0, 200, 20, key="sim2_velocidade")
+        sim2_historico = st.slider("Histórico simulado", 0, 20, 2, key="sim2_historico")
+        sim2_chuva_mm = st.slider("Chuva simulada (mm)", 0, 100, 25, key="sim2_chuva_mm")
+        sim2_solo_instavel = st.selectbox("Solo instável simulado", [0, 1], index=1, key="sim2_solo_instavel")
+
+    simular = st.button("Executar simulação")
+
+    if simular:
+        payload_base = {
+            "equipment_id": int(sim_equipment_id),
+            "farm_id": int(sim_farm_id),
+            "region": sim_region,
+            "operation_type": sim_operation_type,
+            "clima": sim_clima,
+            "umidade_solo": int(sim_umidade_solo),
+            "inclinacao": int(sim_inclinacao),
+            "distancia_agua": int(sim_distancia_agua),
+            "velocidade": int(sim_velocidade),
+            "historico_sinistros": int(sim_historico),
+            "chuva_mm": int(sim_chuva_mm),
+            "solo_instavel": int(sim_solo_instavel),
+            "latitude": float(sim_latitude),
+            "longitude": float(sim_longitude),
+        }
+
+        payload_simulado = {
+            "scenario_name": scenario_name,
+            "equipment_id": int(sim_equipment_id),
+            "farm_id": int(sim_farm_id),
+            "region": sim_region,
+            "operation_type": sim_operation_type,
+            "clima": sim2_clima,
+            "umidade_solo": int(sim2_umidade_solo),
+            "inclinacao": int(sim2_inclinacao),
+            "distancia_agua": int(sim2_distancia_agua),
+            "velocidade": int(sim2_velocidade),
+            "historico_sinistros": int(sim2_historico),
+            "chuva_mm": int(sim2_chuva_mm),
+            "solo_instavel": int(sim2_solo_instavel),
+            "latitude": float(sim_latitude),
+            "longitude": float(sim_longitude),
+        }
+
+        ok_base, base_result = post_json(PREDICT_URL, payload_base)
+        ok_sim, sim_result = post_json(SIMULATE_URL, payload_simulado)
+
+        if ok_base and ok_sim:
+            st.success("Simulação executada com sucesso")
+
+            base_score = float(base_result.get("risk_score", 0))
+            sim_score = float(sim_result.get("risk_score", 0))
+            delta = round(sim_score - base_score, 2)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Risco base", base_score)
+            c2.metric("Risco simulado", sim_score)
+            c3.metric("Variação", delta)
+
+            if delta > 0:
+                st.error(f"O cenário simulado aumentou o risco em {delta} pontos.")
+            elif delta < 0:
+                st.success(f"O cenário simulado reduziu o risco em {abs(delta)} pontos.")
+            else:
+                st.info("O cenário simulado manteve o mesmo nível de risco.")
+
+            comp_df = pd.DataFrame(
+                {
+                    "Cenário": ["Base", "Simulado"],
+                    "Risk Score": [base_score, sim_score],
+                }
+            ).set_index("Cenário")
+
+            st.markdown("#### Comparativo visual")
+            st.bar_chart(comp_df)
+
+            col_base, col_sim = st.columns(2)
+
+            with col_base:
+                st.markdown("#### Resultado base")
+                st.write(f"**Nível:** {base_result.get('risk_label', '-')}")
+                st.write(f"**Alerta:** {base_result.get('alert_level', '-')}")
+                st.info(base_result.get("recommendation", "Sem recomendação"))
+
+            with col_sim:
+                st.markdown("#### Resultado simulado")
+                st.write(f"**Nível:** {sim_result.get('risk_label', '-')}")
+                st.write(f"**Alerta:** {sim_result.get('alert_level', '-')}")
+                st.info(sim_result.get("recommendation", "Sem recomendação"))
+
+            st.markdown("#### Fatores do cenário simulado")
+            sim_explanation = sim_result.get("explanation", {})
+            if sim_explanation and isinstance(sim_explanation, dict):
+                sim_expl_df = pd.DataFrame(
+                    {"Fator": list(sim_explanation.keys()), "Impacto": list(sim_explanation.values())}
+                ).set_index("Fator")
+                st.bar_chart(sim_expl_df)
+            else:
+                st.info("Sem fatores suficientes para o gráfico do cenário simulado.")
+
+            st.markdown("#### Resposta completa do cenário simulado")
+            st.json(sim_result)
+
+        else:
+            if not ok_base:
+                show_api_error("Erro no cálculo do cenário base", base_result)
+            if not ok_sim:
+                show_api_error("Erro no cálculo do cenário simulado", sim_result)
