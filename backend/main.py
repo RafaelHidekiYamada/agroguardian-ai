@@ -15,6 +15,9 @@ from .schemas import (
     PredictionResponse,
     SafeRouteRequest,
     SafeRouteResponse,
+    AlertPolicyCreate,
+    AlertPolicyUpdate,
+    AlertPolicyResponse,
 )
 from .feature_engineering import build_features, FEATURE_ORDER
 from .risk_model import train_or_load_model, predict_risk
@@ -88,6 +91,47 @@ def _seed_if_needed():
             ),
         ]
         db.add_all(equipments)
+        db.add_all([
+            models.AlertPolicy(
+                name="Política Campo",
+                operation_type="campo",
+                min_risk_alert=40,
+                min_risk_block=70,
+                max_speed=20,
+                max_slope=12,
+                min_distance_water=25,
+                max_rain_mm=15,
+                block_on_water=False,
+                block_on_unstable_soil=True,
+                is_active=True,
+            ),
+            models.AlertPolicy(
+                name="Política Transporte",
+                operation_type="transporte",
+                min_risk_alert=35,
+                min_risk_block=65,
+                max_speed=30,
+                max_slope=10,
+                min_distance_water=20,
+                max_rain_mm=10,
+                block_on_water=False,
+                block_on_unstable_soil=False,
+                is_active=True,
+            ),
+            models.AlertPolicy(
+                name="Política Água",
+                operation_type="proximidade_agua",
+                min_risk_alert=30,
+                min_risk_block=55,
+                max_speed=15,
+                max_slope=8,
+                min_distance_water=40,
+                max_rain_mm=8,
+                block_on_water=True,
+                block_on_unstable_soil=True,
+                is_active=True,
+            ),
+        ])
         db.commit()
 
         sample_records = [
@@ -260,6 +304,96 @@ def root():
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
+def _get_active_policy(db: Session, operation_type: str):
+    policy = (
+        db.query(models.AlertPolicy)
+        .filter(
+            models.AlertPolicy.operation_type == operation_type,
+            models.AlertPolicy.is_active == True,
+        )
+        .first()
+    )
+
+    if policy:
+        return policy
+
+    fallback = (
+        db.query(models.AlertPolicy)
+        .filter(
+            models.AlertPolicy.operation_type == "all",
+            models.AlertPolicy.is_active == True,
+        )
+        .first()
+    )
+    return fallback
+
+
+def _apply_alert_policy(
+    risk_score: float,
+    payload: Dict[str, Any],
+    policy,
+    current_alert_level: str,
+    current_recommendation: str,
+):
+    if not policy:
+        return current_alert_level, current_recommendation, []
+
+    policy_alerts = []
+    block_reasons = []
+
+    velocidade = float(payload.get("velocidade", 0))
+    inclinacao = float(payload.get("inclinacao", 0))
+    distancia_agua = float(payload.get("distancia_agua", 9999))
+    chuva_mm = float(payload.get("chuva_mm", 0))
+    solo_instavel = int(payload.get("solo_instavel", 0))
+
+    if risk_score >= policy.min_risk_alert:
+        policy_alerts.append({
+            "type": "policy_risk_alert",
+            "severity": "medium",
+            "message": f"Score acima do limite de alerta da política ({policy.min_risk_alert}).",
+        })
+
+    if risk_score >= policy.min_risk_block:
+        block_reasons.append(f"Score acima do limite de bloqueio ({policy.min_risk_block})")
+
+    if velocidade > policy.max_speed:
+        block_reasons.append(f"Velocidade acima do limite ({policy.max_speed})")
+
+    if inclinacao > policy.max_slope:
+        block_reasons.append(f"Inclinação acima do limite ({policy.max_slope})")
+
+    if distancia_agua < policy.min_distance_water:
+        policy_alerts.append({
+            "type": "policy_water_distance",
+            "severity": "medium",
+            "message": f"Distância da água abaixo do mínimo da política ({policy.min_distance_water} m).",
+        })
+        if policy.block_on_water:
+            block_reasons.append("Operação próxima à água com bloqueio habilitado")
+
+    if chuva_mm > policy.max_rain_mm:
+        block_reasons.append(f"Chuva acima do limite ({policy.max_rain_mm} mm)")
+
+    if solo_instavel == 1 and policy.block_on_unstable_soil:
+        block_reasons.append("Solo instável com bloqueio habilitado")
+
+    if block_reasons:
+        alert_level = "⛔ Operação bloqueada por política"
+        recommendation = (
+            "Operação bloqueada pela política configurada. Motivos: "
+            + "; ".join(block_reasons)
+            + ". Revise velocidade, clima, inclinação e proximidade da água."
+        )
+        policy_alerts.append({
+            "type": "policy_block",
+            "severity": "high",
+            "message": recommendation,
+        })
+        return alert_level, recommendation, policy_alerts
+
+    return current_alert_level, current_recommendation, policy_alerts
+
 
 @app.post("/api/v1/risk/predict", response_model=PredictionResponse)
 def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
@@ -271,6 +405,19 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
     alerts = build_alerts(risk_score, full_payload)
     alert_level = alert_summary(alerts)
     recommendation = _recommendation_text(risk_score, full_payload)
+
+    policy = _get_active_policy(db, full_payload["operation_type"])
+    policy_alert_level, policy_recommendation, policy_alerts = _apply_alert_policy(
+        risk_score=risk_score,
+        payload=full_payload,
+        policy=policy,
+        current_alert_level=alert_level,
+        current_recommendation=recommendation,
+    )
+
+    alerts.extend(policy_alerts)
+    alert_level = policy_alert_level
+    recommendation = policy_recommendation
     route = recommend_route(full_payload)
 
     explanation = shap_explanation(
@@ -476,3 +623,31 @@ def list_farms(db: Session = Depends(get_db)):
 @app.get("/api/v1/equipment")
 def list_equipment(db: Session = Depends(get_db)):
     return list_equipment_data(db)
+
+@app.get("/api/v1/policies/alerts", response_model=list[AlertPolicyResponse])
+def list_alert_policies(db: Session = Depends(get_db)):
+    return db.query(models.AlertPolicy).order_by(models.AlertPolicy.id.asc()).all()
+
+
+@app.post("/api/v1/policies/alerts", response_model=AlertPolicyResponse)
+def create_alert_policy(payload: AlertPolicyCreate, db: Session = Depends(get_db)):
+    policy = models.AlertPolicy(**payload.model_dump())
+    db.add(policy)
+    db.commit()
+    db.refresh(policy)
+    return policy
+
+
+@app.put("/api/v1/policies/alerts/{policy_id}", response_model=AlertPolicyResponse)
+def update_alert_policy(policy_id: int, payload: AlertPolicyUpdate, db: Session = Depends(get_db)):
+    policy = db.query(models.AlertPolicy).filter(models.AlertPolicy.id == policy_id).first()
+    if not policy:
+        raise ValueError("Política não encontrada")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(policy, key, value)
+
+    db.commit()
+    db.refresh(policy)
+    return policy

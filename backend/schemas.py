@@ -62,3 +62,52 @@ class AuditResponse(BaseModel):
     actor: str
     action: str
     payload: Dict[str, Any]
+
+from pydantic import BaseModel
+
+
+class AlertPolicyBase(BaseModel):
+    name: str
+    operation_type: str
+
+    min_risk_alert: float = 40.0
+    min_risk_block: float = 70.0
+
+    max_speed: float = 25.0
+    max_slope: float = 15.0
+    min_distance_water: float = 30.0
+    max_rain_mm: float = 20.0
+
+    block_on_water: bool = False
+    block_on_unstable_soil: bool = False
+
+    is_active: bool = True
+
+
+class AlertPolicyCreate(AlertPolicyBase):
+    pass
+
+
+class AlertPolicyUpdate(BaseModel):
+    name: str | None = None
+    operation_type: str | None = None
+
+    min_risk_alert: float | None = None
+    min_risk_block: float | None = None
+
+    max_speed: float | None = None
+    max_slope: float | None = None
+    min_distance_water: float | None = None
+    max_rain_mm: float | None = None
+
+    block_on_water: bool | None = None
+    block_on_unstable_soil: bool | None = None
+
+    is_active: bool | None = None
+
+
+class AlertPolicyResponse(AlertPolicyBase):
+    id: int
+
+    class Config:
+        from_attributes = True

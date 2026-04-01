@@ -17,6 +17,7 @@ ALERTS_URL = f"{API_BASE_URL}/api/v1/dashboard/alerts"
 AUDIT_URL = f"{API_BASE_URL}/api/v1/dashboard/audit"
 EQUIPMENT_URL = f"{API_BASE_URL}/api/v1/equipment"
 FARMS_URL = f"{API_BASE_URL}/api/v1/farms"
+POLICIES_URL = f"{API_BASE_URL}/api/v1/policies/alerts"
 
 
 def get_json(url: str) -> tuple[bool, Any]:
@@ -121,13 +122,14 @@ def show_api_error(title: str, error_data: Any) -> None:
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     [
         "Operação em tempo real",
         "Resumo executivo",
         "Ranking",
         "Tendências",
         "Alertas e auditoria",
+        "Políticas de alerta",
     ]
 )
 
@@ -382,3 +384,61 @@ with tab5:
                 st.info("Nenhum dado de auditoria retornado.")
         else:
             show_api_error("Erro ao carregar auditoria", audit_data)
+
+with tab6:
+    st.markdown("### Políticas de alerta")
+
+    ok_policies, policies_data = get_json(POLICIES_URL)
+
+    if ok_policies:
+        df_policies = any_to_dataframe(policies_data)
+        if not df_policies.empty:
+            st.dataframe(df_policies, use_container_width=True)
+        else:
+            st.info("Nenhuma política encontrada.")
+    else:
+        show_api_error("Erro ao carregar políticas", policies_data)
+
+    st.markdown("### Criar nova política")
+
+    with st.form("nova_politica"):
+        name = st.text_input("Nome da política", value="Nova Política")
+        operation_type = st.selectbox(
+            "Tipo de operação",
+            ["campo", "transporte", "proximidade_agua", "all"]
+        )
+
+        min_risk_alert = st.number_input("Score mínimo para alerta", value=40.0)
+        min_risk_block = st.number_input("Score mínimo para bloqueio", value=70.0)
+        max_speed = st.number_input("Velocidade máxima", value=25.0)
+        max_slope = st.number_input("Inclinação máxima", value=15.0)
+        min_distance_water = st.number_input("Distância mínima da água", value=30.0)
+        max_rain_mm = st.number_input("Chuva máxima (mm)", value=20.0)
+
+        block_on_water = st.checkbox("Bloquear se estiver próximo da água", value=False)
+        block_on_unstable_soil = st.checkbox("Bloquear se solo estiver instável", value=False)
+        is_active = st.checkbox("Política ativa", value=True)
+
+        submitted = st.form_submit_button("Salvar política")
+
+        if submitted:
+            payload = {
+                "name": name,
+                "operation_type": operation_type,
+                "min_risk_alert": min_risk_alert,
+                "min_risk_block": min_risk_block,
+                "max_speed": max_speed,
+                "max_slope": max_slope,
+                "min_distance_water": min_distance_water,
+                "max_rain_mm": max_rain_mm,
+                "block_on_water": block_on_water,
+                "block_on_unstable_soil": block_on_unstable_soil,
+                "is_active": is_active,
+            }
+
+            ok_create, create_data = post_json(POLICIES_URL, payload)
+
+            if ok_create:
+                st.success("Política criada com sucesso. Atualize a página para visualizar.")
+            else:
+                show_api_error("Erro ao criar política", create_data)

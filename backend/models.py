@@ -3,6 +3,8 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Tex
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime
 
 class Farm(Base):
     __tablename__ = "farms"
@@ -92,3 +94,26 @@ class AuditLog(Base):
     actor = Column(String(40), nullable=False)
     action = Column(String(80), nullable=False)
     payload = Column(JSON, nullable=False)
+
+class AlertPolicy(Base):
+    __tablename__ = "alert_policies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    operation_type = Column(String, nullable=False)  # campo, transporte, proximidade_agua, all
+
+    min_risk_alert = Column(Float, default=40.0)
+    min_risk_block = Column(Float, default=70.0)
+
+    max_speed = Column(Float, default=25.0)
+    max_slope = Column(Float, default=15.0)
+    min_distance_water = Column(Float, default=30.0)
+    max_rain_mm = Column(Float, default=20.0)
+
+    block_on_water = Column(Boolean, default=False)
+    block_on_unstable_soil = Column(Boolean, default=False)
+
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
