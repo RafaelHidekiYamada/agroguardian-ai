@@ -1,0 +1,16 @@
+---
+title: "Relatório Analítico - AgroGuardian AI"
+output: html_document
+---
+
+## Objetivo
+
+Este relatório será usado para a camada de Data Science em R do projeto AgroGuardian AI.
+
+## Escopo planejado
+
+- análise exploratória dos dados;
+- distribuição de score de risco;
+- correlação entre variáveis ambientais e operacionais;
+- gráficos por região, clima e operação;
+- insights executivos para a Sompo.

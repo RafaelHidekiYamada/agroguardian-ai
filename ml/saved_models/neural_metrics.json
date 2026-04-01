@@ -1,0 +1,19 @@
+{
+  "model_name": "mlp_regressor",
+  "mae": 3.9311,
+  "rmse": 5.6056,
+  "r2": 0.8633,
+  "n_train": 3200,
+  "n_test": 800,
+  "features": [
+    "umidade_solo",
+    "inclinacao",
+    "distancia_agua",
+    "velocidade",
+    "historico_sinistros",
+    "chuva_mm",
+    "solo_instavel",
+    "clima_code",
+    "operation_code"
+  ]
+}

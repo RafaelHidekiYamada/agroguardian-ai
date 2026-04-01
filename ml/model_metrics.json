@@ -1,0 +1,15 @@
+{
+  "baseline": {
+    "model_name": "random_forest",
+    "mae": 4.7685,
+    "rmse": 6.7368,
+    "r2": 0.783
+  },
+  "neural_network": {
+    "model_name": "mlp_regressor",
+    "mae": 3.8345,
+    "rmse": 5.5511,
+    "r2": 0.8527
+  },
+  "recommended_model": "mlp_regressor"
+}
