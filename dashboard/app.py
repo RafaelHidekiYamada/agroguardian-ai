@@ -28,7 +28,6 @@ solo_instavel = st.sidebar.selectbox("Solo instável", [0, 1])
 latitude = st.sidebar.number_input("Latitude", value=-23.455000, format="%.6f")
 longitude = st.sidebar.number_input("Longitude", value=-46.533000, format="%.6f")
 
-# Valores-base; a API pode enriquecer com clima real
 clima_base = st.sidebar.selectbox("Clima base", ["sol", "nublado", "chuva"], index=0)
 chuva_mm_base = st.sidebar.slider("Chuva base (mm)", 0, 100, 0)
 
@@ -85,7 +84,7 @@ if st.button("Calcular risco"):
             st.write(f"Chuva (1h): **{weather.get('rain_mm_1h', '-')} mm**")
 
             if weather.get("error"):
-                st.warning(f"Clima externo indisponível. Fallback aplicado: {weather.get('error')}")
+                st.warning("Clima externo indisponível. O sistema usou fallback automático.")
 
             st.subheader("Alertas")
             alertas = resultado.get("alerts", [])

@@ -4,10 +4,7 @@ import time
 import requests
 from .config import settings
 
-# Cache em memória: {(lat_rounded, lon_rounded): {"data": ..., "expires_at": ...}}
 _WEATHER_CACHE: dict[Tuple[float, float], Dict] = {}
-
-# 10 minutos de cache
 CACHE_TTL_SECONDS = 600
 
 
@@ -50,19 +47,9 @@ def _fallback_weather(reason: str) -> Dict:
 
 
 def get_weather(latitude: float, longitude: float) -> Dict:
-    """
-    Busca clima no OpenWeather com:
-    - retry
-    - timeout curto
-    - cache
-    - fallback sem quebrar a API
-    """
-
-    # 1) Sem chave: devolve fallback
     if not settings.openweather_api_key:
         return _fallback_weather("Sem OPENWEATHER_API_KEY configurada")
 
-    # 2) Se já tiver cache válido, usa
     cached = _get_cached_weather(latitude, longitude)
     if cached:
         return cached
@@ -78,7 +65,6 @@ def get_weather(latitude: float, longitude: float) -> Dict:
 
     last_error = "Erro desconhecido"
 
-    # 3) Tenta até 3 vezes
     for attempt in range(3):
         try:
             response = requests.get(url, params=params, timeout=8)
@@ -96,16 +82,13 @@ def get_weather(latitude: float, longitude: float) -> Dict:
                 "error": None,
             }
 
-            # 4) Salva cache e devolve
             _set_cached_weather(latitude, longitude, weather)
             return weather
 
         except Exception as e:
             last_error = str(e)
-            # backoff simples
             time.sleep(1.2 * (attempt + 1))
 
-    # 5) Se falhou, tenta usar cache expirado recente
     key = _cache_key(latitude, longitude)
     stale = _WEATHER_CACHE.get(key)
     if stale:
@@ -114,5 +97,4 @@ def get_weather(latitude: float, longitude: float) -> Dict:
         stale_data["error"] = f"OpenWeather indisponível. Usando cache antigo. Motivo: {last_error}"
         return stale_data
 
-    # 6) Se não tiver cache, devolve fallback
     return _fallback_weather(last_error)
