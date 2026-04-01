@@ -57,14 +57,14 @@ def buscar_clima_automatico(latitude: float, longitude: float):
             "origem": "openweather"
         }
 
-    except Exception:
+    except Exception as e:
         return {
             "clima": "sol",
             "chuva_mm": 0,
             "temperatura": None,
-            "origem": "fallback"
+            "origem": "fallback",
+            "erro_clima": str(e)
         }
-
 
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
@@ -94,6 +94,7 @@ if st.button("Calcular risco"):
     chuva_mm = 0
     temperatura = None
     origem_clima = "manual"
+    erro_clima = None
 
     if usar_clima_automatico:
         clima_data = buscar_clima_automatico(float(latitude), float(longitude))
@@ -101,6 +102,7 @@ if st.button("Calcular risco"):
         chuva_mm = clima_data["chuva_mm"]
         temperatura = clima_data["temperatura"]
         origem_clima = clima_data["origem"]
+        erro_clima = clima_data.get("erro_clima")
     else:
         clima = st.session_state.get("clima_manual", "sol")
         chuva_mm = 0
@@ -153,6 +155,9 @@ if st.button("Calcular risco"):
             st.write(f"Chuva considerada: **{chuva_mm} mm**")
             if temperatura is not None:
                 st.write(f"Temperatura: **{temperatura} °C**")
+            if erro_clima:
+                st.error(f"Erro ao consultar OpenWeather: {erro_clima}")
+
 
             st.subheader("Alertas")
             alertas = resultado.get("alerts", [])
