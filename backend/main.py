@@ -20,7 +20,8 @@ from .schemas import (
     AlertPolicyResponse,
 )
 from .feature_engineering import build_features, FEATURE_ORDER
-from .risk_model import train_or_load_model, predict_risk
+from .risk_model import predict_risk
+from .ml_registry import load_runtime_model, get_ml_status, get_ml_metrics
 from .alerts import build_alerts, alert_summary
 from .weather_service import get_weather
 from .route_ai import recommend_route
@@ -45,7 +46,7 @@ MODEL_BUNDLE = None
 def startup_event():
     global MODEL_BUNDLE
     Base.metadata.create_all(bind=engine)
-    MODEL_BUNDLE = train_or_load_model()
+    MODEL_BUNDLE = load_runtime_model()
     _seed_if_needed()
 
 
@@ -651,3 +652,19 @@ def update_alert_policy(policy_id: int, payload: AlertPolicyUpdate, db: Session 
     db.commit()
     db.refresh(policy)
     return policy
+
+@app.get("/api/v1/ml/status")
+def ml_status():
+    global MODEL_BUNDLE
+
+    return {
+        "loaded_model_name": MODEL_BUNDLE.get("model_name") if MODEL_BUNDLE else None,
+        "runtime_source": MODEL_BUNDLE.get("runtime_source") if MODEL_BUNDLE else None,
+        "feature_names": MODEL_BUNDLE.get("feature_names") if MODEL_BUNDLE else None,
+        "registry": get_ml_status(),
+    }
+
+
+@app.get("/api/v1/ml/metrics")
+def ml_metrics():
+    return get_ml_metrics()

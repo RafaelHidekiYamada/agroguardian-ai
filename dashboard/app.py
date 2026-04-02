@@ -19,6 +19,8 @@ AUDIT_URL = f"{API_BASE_URL}/api/v1/dashboard/audit"
 EQUIPMENT_URL = f"{API_BASE_URL}/api/v1/equipment"
 FARMS_URL = f"{API_BASE_URL}/api/v1/farms"
 POLICIES_URL = f"{API_BASE_URL}/api/v1/policies/alerts"
+ML_STATUS_URL = f"{API_BASE_URL}/api/v1/ml/status"
+ML_METRICS_URL = f"{API_BASE_URL}/api/v1/ml/metrics"
 
 
 def get_json(url: str) -> tuple[bool, Any]:
@@ -196,7 +198,7 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "Operação em tempo real",
         "Resumo executivo",
@@ -205,6 +207,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         "Alertas e auditoria",
         "Políticas de alerta",
         "Simulador de risco",
+        "IA e ML",
     ]
 )
 
@@ -598,3 +601,47 @@ with tab7:
                 show_api_error("Erro no cálculo do cenário base", base_result)
             if not ok_sim:
                 show_api_error("Erro no cálculo do cenário simulado", sim_result)
+            
+with tab8:
+    st.markdown("### Inteligência Artificial e Machine Learning")
+
+    ok_status, status_data = get_json(ML_STATUS_URL)
+    ok_metrics, metrics_data = get_json(ML_METRICS_URL)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### Status do modelo em produção")
+        if ok_status:
+            st.json(status_data)
+        else:
+            show_api_error("Erro ao carregar status do modelo", status_data)
+
+    with col2:
+        st.markdown("#### Métricas dos modelos")
+        if ok_metrics:
+            st.json(metrics_data)
+
+            if isinstance(metrics_data, dict):
+                baseline = metrics_data.get("baseline", {})
+                neural = metrics_data.get("neural_network", {})
+
+                if baseline and neural:
+                    chart_df = pd.DataFrame(
+                        {
+                            "Modelo": ["Baseline", "Rede Neural"],
+                            "R2": [
+                                baseline.get("r2", 0),
+                                neural.get("r2", 0),
+                            ],
+                            "RMSE": [
+                                baseline.get("rmse", 0),
+                                neural.get("rmse", 0),
+                            ],
+                        }
+                    ).set_index("Modelo")
+
+                    st.markdown("#### Comparativo visual")
+                    st.bar_chart(chart_df)
+        else:
+            show_api_error("Erro ao carregar métricas do modelo", metrics_data)
