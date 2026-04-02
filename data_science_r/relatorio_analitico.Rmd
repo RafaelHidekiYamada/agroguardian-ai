@@ -1,16 +1,93 @@
 ---
 title: "Relatório Analítico - AgroGuardian AI"
+author: "Equipe AgroGuardian AI"
+date: "`r Sys.Date()`"
 output: html_document
 ---
 
-## Objetivo
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+```
 
-Este relatório será usado para a camada de Data Science em R do projeto AgroGuardian AI.
+# Introdução
 
-## Escopo planejado
+Este relatório apresenta a análise exploratória dos dados gerados pela
+plataforma AgroGuardian AI, com foco em risco operacional de equipamentos
+agrícolas.
 
-- análise exploratória dos dados;
-- distribuição de score de risco;
-- correlação entre variáveis ambientais e operacionais;
-- gráficos por região, clima e operação;
-- insights executivos para a Sompo.
+# Leitura dos dados
+
+```{r}
+dados <- read_csv("data/agroguardian_predictions.csv")
+head(dados)
+summary(dados)
+```
+
+# Distribuição do risco
+
+```{r}
+dados$predicted_risk <- as.numeric(dados$predicted_risk)
+
+ggplot(dados, aes(x = predicted_risk)) +
+  geom_histogram(bins = 10) +
+  labs(
+    title = "Distribuição do Risk Score",
+    x = "Risk Score",
+    y = "Frequência"
+  )
+```
+
+# Média de risco por tipo de operação
+
+```{r}
+if ("input_operation_type" %in% colnames(dados)) {
+  media_operacao <- dados |>
+    group_by(input_operation_type) |>
+    summarise(
+      media_risco = mean(predicted_risk, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  media_operacao
+
+  ggplot(media_operacao, aes(x = input_operation_type, y = media_risco)) +
+    geom_col() +
+    labs(
+      title = "Média de risco por tipo de operação",
+      x = "Tipo de operação",
+      y = "Média do risco"
+    )
+}
+```
+
+# Média de risco por clima
+
+```{r}
+if ("input_clima" %in% colnames(dados)) {
+  clima_risco <- dados |>
+    group_by(input_clima) |>
+    summarise(
+      media_risco = mean(predicted_risk, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  clima_risco
+
+  ggplot(clima_risco, aes(x = input_clima, y = media_risco)) +
+    geom_col() +
+    labs(
+      title = "Média de risco por clima",
+      x = "Clima",
+      y = "Média do risco"
+    )
+}
+```
+
+# Conclusão
+
+A análise mostra como fatores operacionais e ambientais influenciam o score
+de risco gerado pelo AgroGuardian AI, reforçando a capacidade preventiva da
+solução.
