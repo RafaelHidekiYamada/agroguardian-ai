@@ -31,7 +31,11 @@ from .ml_registry import load_runtime_model, get_ml_status, get_ml_metrics
 from .alerts import build_alerts, alert_summary
 from .weather_service import get_weather
 from .route_ai import recommend_route
-from .explainability import heuristic_explanation, shap_explanation
+from .explainability import (
+    heuristic_explanation,
+    shap_explanation,
+    build_executive_explanation,
+)
 from .map_service import build_risk_map
 from .audit import write_audit
 from .reports import (
@@ -665,6 +669,13 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
     if not explanation:
         explanation = heuristic_explanation(full_payload, risk_score)
 
+    executive_explanation = build_executive_explanation(
+        risk_score=risk_score,
+        risk_label=risk_label,
+        explanation=explanation,
+        recommendation=recommendation,
+    )
+
     audit_id = write_audit(
         db,
         actor="api",
@@ -740,6 +751,7 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
         recommendation=recommendation,
         safe_route=route,
         explanation=explanation,
+        executive_explanation=executive_explanation,
         weather=weather,
         audit_id=audit_id,
     )
@@ -862,6 +874,28 @@ def list_farms(db: Session = Depends(get_db)):
 @app.get("/api/v1/equipment")
 def list_equipment(db: Session = Depends(get_db)):
     return list_equipment_data(db)
+
+@app.get("/api/v1/policies/alerts")
+def list_alert_policies(db: Session = Depends(get_db)):
+    policies = db.query(models.AlertPolicy).order_by(desc(models.AlertPolicy.id)).all()
+
+    return [
+        {
+            "id": policy.id,
+            "name": policy.name,
+            "operation_type": policy.operation_type,
+            "min_risk_alert": policy.min_risk_alert,
+            "min_risk_block": policy.min_risk_block,
+            "max_speed": policy.max_speed,
+            "max_slope": policy.max_slope,
+            "min_distance_water": policy.min_distance_water,
+            "max_rain_mm": policy.max_rain_mm,
+            "block_on_water": policy.block_on_water,
+            "block_on_unstable_soil": policy.block_on_unstable_soil,
+            "is_active": policy.is_active,
+        }
+        for policy in policies
+    ]
 
 @app.post("/api/v1/policies/alerts", response_model=AlertPolicyResponse)
 def create_alert_policy(

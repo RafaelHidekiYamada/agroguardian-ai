@@ -21,34 +21,135 @@ FARMS_URL = f"{API_BASE_URL}/api/v1/farms"
 POLICIES_URL = f"{API_BASE_URL}/api/v1/policies/alerts"
 ML_STATUS_URL = f"{API_BASE_URL}/api/v1/ml/status"
 ML_METRICS_URL = f"{API_BASE_URL}/api/v1/ml/metrics"
+AUTH_LOGIN_URL = f"{API_BASE_URL}/api/v1/auth/login"
+AUTH_ME_URL = f"{API_BASE_URL}/api/v1/auth/me"
+
+
+def init_auth_state() -> None:
+    defaults = {
+        "auth_token": None,
+        "auth_user": None,
+        "auth_role": None,
+        "auth_full_name": None,
+        "auth_email": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def get_auth_headers() -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    token = st.session_state.get("auth_token")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def login_user(username: str, password: str) -> tuple[bool, str]:
+    try:
+        response = requests.post(
+            AUTH_LOGIN_URL,
+            json={"username": username, "password": password},
+            timeout=20,
+        )
+
+        if response.status_code != 200:
+            try:
+                data = response.json()
+                return False, data.get("detail", "Falha no login")
+            except Exception:
+                return False, response.text
+
+        login_data = response.json()
+        token = login_data.get("access_token")
+
+        me_response = requests.get(
+            AUTH_ME_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+
+        if me_response.status_code != 200:
+            return False, "Login realizado, mas falhou ao carregar perfil do usuário."
+
+        me_data = me_response.json()
+
+        st.session_state["auth_token"] = token
+        st.session_state["auth_user"] = me_data.get("username")
+        st.session_state["auth_role"] = me_data.get("role")
+        st.session_state["auth_full_name"] = me_data.get("full_name")
+        st.session_state["auth_email"] = me_data.get("email")
+
+        return True, "Login realizado com sucesso."
+
+    except requests.exceptions.RequestException as e:
+        return False, f"Erro de conexão no login: {e}"
+
+
+def logout_user() -> None:
+    st.session_state["auth_token"] = None
+    st.session_state["auth_user"] = None
+    st.session_state["auth_role"] = None
+    st.session_state["auth_full_name"] = None
+    st.session_state["auth_email"] = None
+    st.rerun()
 
 
 def get_json(url: str) -> tuple[bool, Any]:
     try:
-        response = requests.get(url, timeout=30)
+        response = requests.get(
+            url,
+            headers=get_auth_headers(),
+            timeout=30,
+        )
         if response.status_code == 200:
             return True, response.json()
 
-        content_type = response.headers.get("content-type", "")
-        if "application/json" in content_type:
+        try:
             return False, response.json()
-        return False, response.text
+        except Exception:
+            return False, {"detail": response.text, "status_code": response.status_code}
     except requests.exceptions.RequestException as e:
-        return False, str(e)
+        return False, {"detail": str(e), "status_code": 500}
 
 
 def post_json(url: str, payload: dict) -> tuple[bool, Any]:
     try:
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(
+            url,
+            json=payload,
+            headers=get_auth_headers(),
+            timeout=30,
+        )
+        if response.status_code in (200, 201):
+            return True, response.json()
+
+        try:
+            return False, response.json()
+        except Exception:
+            return False, {"detail": response.text, "status_code": response.status_code}
+    except requests.exceptions.RequestException as e:
+        return False, {"detail": str(e), "status_code": 500}
+
+
+def put_json(url: str, payload: dict) -> tuple[bool, Any]:
+    try:
+        response = requests.put(
+            url,
+            json=payload,
+            headers=get_auth_headers(),
+            timeout=30,
+        )
         if response.status_code == 200:
             return True, response.json()
 
-        content_type = response.headers.get("content-type", "")
-        if "application/json" in content_type:
+        try:
             return False, response.json()
-        return False, response.text
+        except Exception:
+            return False, {"detail": response.text, "status_code": response.status_code}
     except requests.exceptions.RequestException as e:
-        return False, str(e)
+        return False, {"detail": str(e), "status_code": 500}
 
 
 def any_to_dataframe(data: Any) -> pd.DataFrame:
@@ -82,8 +183,15 @@ def extract_trend_dataframe(data: Any) -> pd.DataFrame:
 
     time_candidates = ["date", "data", "timestamp", "periodo", "mes", "dia"]
     value_candidates = [
-        "risk_score", "score", "value", "valor", "avg_risk",
-        "media_risco", "trend", "quantidade", "total"
+        "risk_score",
+        "score",
+        "value",
+        "valor",
+        "avg_risk",
+        "media_risco",
+        "trend",
+        "quantidade",
+        "total",
     ]
 
     time_col = next((c for c in df.columns if c.lower() in time_candidates), None)
@@ -113,12 +221,12 @@ def flatten_metrics(data: Any) -> dict[str, Any]:
     return flat
 
 
-def show_api_error(title: str, error_data: Any) -> None:
+def show_api_error(title: str, data: Any) -> None:
     st.error(title)
-    if isinstance(error_data, (dict, list)):
-        st.json(error_data)
+    if isinstance(data, (dict, list)):
+        st.json(data)
     else:
-        st.write(error_data)
+        st.write(data)
 
 
 def render_prediction_result(resultado: dict, latitude: float, longitude: float) -> None:
@@ -152,6 +260,13 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     if weather.get("error"):
         st.warning("Clima externo indisponível. O sistema aplicou fallback automático.")
 
+    st.subheader("Resumo executivo da IA")
+    executive_explanation = resultado.get("executive_explanation", {})
+    if executive_explanation and isinstance(executive_explanation, dict):
+        st.info(executive_explanation.get("summary", "Sem resumo executivo disponível."))
+    else:
+        st.info("Sem resumo executivo disponível.")
+
     st.subheader("Alertas")
     alertas = resultado.get("alerts", [])
     if alertas:
@@ -175,8 +290,16 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     mapa_df = pd.DataFrame([{"lat": float(latitude), "lon": float(longitude)}])
     st.map(mapa_df)
 
-    st.subheader("Gráfico de fatores de risco")
+    st.subheader("Principais fatores de risco")
     explicacao = resultado.get("explanation", {})
+    if explicacao and isinstance(explicacao, dict):
+        top_items = list(explicacao.items())[:5]
+        for fator, impacto in top_items:
+            st.write(f"**{fator}:** {impacto}%")
+    else:
+        st.info("Sem fatores explicativos disponíveis.")
+
+    st.subheader("Gráfico de fatores de risco")
     if explicacao and isinstance(explicacao, dict):
         grafico_df = pd.DataFrame(
             {"Fator": list(explicacao.keys()), "Impacto": list(explicacao.values())}
@@ -195,29 +318,73 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     st.json(resultado)
 
 
+init_auth_state()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Acesso seguro")
+
+if not st.session_state.get("auth_token"):
+    login_username = st.sidebar.text_input("Usuário", key="login_username")
+    login_password = st.sidebar.text_input("Senha", type="password", key="login_password")
+
+    if st.sidebar.button("Entrar", key="btn_login"):
+        ok, msg = login_user(login_username, login_password)
+        if ok:
+            st.sidebar.success(msg)
+            st.rerun()
+        else:
+            st.sidebar.error(msg)
+
+    st.title("🌱 AgroGuardian AI")
+    st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
+    st.warning("Faça login para acessar o dashboard seguro.")
+    st.stop()
+else:
+    st.sidebar.success(f"Logado como: {st.session_state.get('auth_user')}")
+    st.sidebar.write(f"Perfil: **{st.session_state.get('auth_role')}**")
+    st.sidebar.write(f"Nome: **{st.session_state.get('auth_full_name')}**")
+
+    if st.sidebar.button("Sair", key="btn_logout"):
+        logout_user()
+
 st.title("🌱 AgroGuardian AI")
 st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+user_role = st.session_state.get("auth_role", "operador")
+
+tab_labels = [
+    "Operação em tempo real",
+    "Resumo executivo",
+    "Ranking",
+    "Tendências",
+]
+
+if user_role in ("admin", "sompo"):
+    tab_labels.append("Alertas e auditoria")
+
+if user_role in ("admin", "gestor"):
+    tab_labels.append("Políticas de alerta")
+
+tab_labels.extend(
     [
-        "Operação em tempo real",
-        "Resumo executivo",
-        "Ranking",
-        "Tendências",
-        "Alertas e auditoria",
-        "Políticas de alerta",
         "Simulador de risco",
         "IA e ML",
     ]
 )
 
-with tab1:
+tabs = st.tabs(tab_labels)
+tab_map = dict(zip(tab_labels, tabs))
+
+with tab_map["Operação em tempo real"]:
     st.sidebar.header("Dados da operação")
 
     equipment_id = st.sidebar.number_input("ID do equipamento", min_value=1, value=1, step=1)
     farm_id = st.sidebar.number_input("ID da fazenda", min_value=1, value=1, step=1)
     region = st.sidebar.text_input("Região", value="Guarulhos - SP")
-    operation_type = st.sidebar.selectbox("Tipo de operação", ["campo", "transporte", "proximidade_agua"])
+    operation_type = st.sidebar.selectbox(
+        "Tipo de operação",
+        ["campo", "transporte", "proximidade_agua"],
+    )
 
     umidade_solo = st.sidebar.slider("Umidade do solo", 0, 100, 80)
     inclinacao = st.sidebar.slider("Inclinação do terreno", 0, 90, 12)
@@ -267,7 +434,7 @@ with tab1:
         else:
             show_api_error("Erro na API de predição", resultado)
 
-with tab2:
+with tab_map["Resumo executivo"]:
     st.markdown("### Resumo executivo Sompo")
 
     col_exec1, col_exec2 = st.columns([1, 1])
@@ -309,7 +476,7 @@ with tab2:
     else:
         show_api_error("Erro ao carregar equipamentos", equipment_data)
 
-with tab3:
+with tab_map["Ranking"]:
     st.markdown("### Ranking de equipamentos")
 
     ok_ranking, ranking_data = get_json(RANKING_URL)
@@ -340,7 +507,7 @@ with tab3:
     else:
         show_api_error("Erro ao carregar ranking", ranking_data)
 
-with tab4:
+with tab_map["Tendências"]:
     st.markdown("### Tendências de risco")
 
     ok_trends, trends_data = get_json(TRENDS_URL)
@@ -362,97 +529,148 @@ with tab4:
     else:
         show_api_error("Erro ao carregar tendências", trends_data)
 
-with tab5:
-    st.markdown("### Alertas e auditoria")
+if "Alertas e auditoria" in tab_map:
+    with tab_map["Alertas e auditoria"]:
+        st.markdown("### Alertas e auditoria")
 
-    col_alerts, col_audit = st.columns(2)
+        col_alerts, col_audit = st.columns(2)
 
-    with col_alerts:
-        ok_alerts, alerts_data = get_json(ALERTS_URL)
-        st.markdown("#### Alertas recentes")
+        with col_alerts:
+            ok_alerts, alerts_data = get_json(ALERTS_URL)
+            st.markdown("#### Alertas recentes")
 
-        if ok_alerts:
-            df_alerts = any_to_dataframe(alerts_data)
-            if not df_alerts.empty:
-                st.dataframe(df_alerts, use_container_width=True)
+            if ok_alerts:
+                df_alerts = any_to_dataframe(alerts_data)
+                if not df_alerts.empty:
+                    st.dataframe(df_alerts, use_container_width=True)
+                else:
+                    st.info("Nenhum alerta retornado.")
             else:
-                st.info("Nenhum alerta retornado.")
-        else:
-            show_api_error("Erro ao carregar alertas", alerts_data)
+                show_api_error("Erro ao carregar alertas", alerts_data)
 
-    with col_audit:
-        ok_audit, audit_data = get_json(AUDIT_URL)
-        st.markdown("#### Auditoria")
+        with col_audit:
+            ok_audit, audit_data = get_json(AUDIT_URL)
+            st.markdown("#### Auditoria")
 
-        if ok_audit:
-            df_audit = any_to_dataframe(audit_data)
-            if not df_audit.empty:
-                st.dataframe(df_audit, use_container_width=True)
+            if ok_audit:
+                df_audit = any_to_dataframe(audit_data)
+                if not df_audit.empty:
+                    st.dataframe(df_audit, use_container_width=True)
+                else:
+                    st.info("Nenhum dado de auditoria retornado.")
             else:
-                st.info("Nenhum dado de auditoria retornado.")
-        else:
-            show_api_error("Erro ao carregar auditoria", audit_data)
+                show_api_error("Erro ao carregar auditoria", audit_data)
 
-with tab6:
-    st.markdown("### Políticas de alerta")
+if "Políticas de alerta" in tab_map:
+    with tab_map["Políticas de alerta"]:
+        st.markdown("### Políticas de alerta")
 
-    ok_policies, policies_data = get_json(POLICIES_URL)
+        ok_policies, policies_data = get_json(POLICIES_URL)
 
-    if ok_policies:
-        df_policies = any_to_dataframe(policies_data)
-        if not df_policies.empty:
-            st.dataframe(df_policies, use_container_width=True)
-        else:
-            st.info("Nenhuma política encontrada.")
-    else:
-        show_api_error("Erro ao carregar políticas", policies_data)
-
-    st.markdown("### Criar nova política")
-
-    with st.form("nova_politica"):
-        name = st.text_input("Nome da política", value="Nova Política")
-        policy_operation_type = st.selectbox(
-            "Tipo de operação da política",
-            ["campo", "transporte", "proximidade_agua", "all"],
-            key="policy_operation_type"
-        )
-
-        min_risk_alert = st.number_input("Score mínimo para alerta", value=40.0)
-        min_risk_block = st.number_input("Score mínimo para bloqueio", value=70.0)
-        max_speed = st.number_input("Velocidade máxima", value=25.0)
-        max_slope = st.number_input("Inclinação máxima", value=15.0)
-        min_distance_water = st.number_input("Distância mínima da água", value=30.0)
-        max_rain_mm = st.number_input("Chuva máxima (mm)", value=20.0)
-
-        block_on_water = st.checkbox("Bloquear se estiver próximo da água", value=False)
-        block_on_unstable_soil = st.checkbox("Bloquear se solo estiver instável", value=False)
-        is_active = st.checkbox("Política ativa", value=True)
-
-        submitted = st.form_submit_button("Salvar política")
-
-        if submitted:
-            payload = {
-                "name": name,
-                "operation_type": policy_operation_type,
-                "min_risk_alert": min_risk_alert,
-                "min_risk_block": min_risk_block,
-                "max_speed": max_speed,
-                "max_slope": max_slope,
-                "min_distance_water": min_distance_water,
-                "max_rain_mm": max_rain_mm,
-                "block_on_water": block_on_water,
-                "block_on_unstable_soil": block_on_unstable_soil,
-                "is_active": is_active,
-            }
-
-            ok_create, create_data = post_json(POLICIES_URL, payload)
-
-            if ok_create:
-                st.success("Política criada com sucesso. Atualize a página para visualizar.")
+        if ok_policies:
+            df_policies = any_to_dataframe(policies_data)
+            if not df_policies.empty:
+                st.dataframe(df_policies, use_container_width=True)
             else:
-                show_api_error("Erro ao criar política", create_data)
+                st.info("Nenhuma política encontrada.")
+        else:
+            show_api_error("Erro ao carregar políticas", policies_data)
 
-with tab7:
+        st.markdown("### Criar nova política")
+
+        with st.form("nova_politica"):
+            name = st.text_input("Nome da política", value="Nova Política")
+            policy_operation_type = st.selectbox(
+                "Tipo de operação da política",
+                ["campo", "transporte", "proximidade_agua", "all"],
+                key="policy_operation_type"
+            )
+
+            min_risk_alert = st.number_input("Score mínimo para alerta", value=40.0)
+            min_risk_block = st.number_input("Score mínimo para bloqueio", value=70.0)
+            max_speed = st.number_input("Velocidade máxima", value=25.0)
+            max_slope = st.number_input("Inclinação máxima", value=15.0)
+            min_distance_water = st.number_input("Distância mínima da água", value=30.0)
+            max_rain_mm = st.number_input("Chuva máxima (mm)", value=20.0)
+
+            block_on_water = st.checkbox("Bloquear se estiver próximo da água", value=False)
+            block_on_unstable_soil = st.checkbox("Bloquear se solo estiver instável", value=False)
+            is_active = st.checkbox("Política ativa", value=True)
+
+            submitted = st.form_submit_button("Salvar política")
+
+            if submitted:
+                payload = {
+                    "name": name,
+                    "operation_type": policy_operation_type,
+                    "min_risk_alert": min_risk_alert,
+                    "min_risk_block": min_risk_block,
+                    "max_speed": max_speed,
+                    "max_slope": max_slope,
+                    "min_distance_water": min_distance_water,
+                    "max_rain_mm": max_rain_mm,
+                    "block_on_water": block_on_water,
+                    "block_on_unstable_soil": block_on_unstable_soil,
+                    "is_active": is_active,
+                }
+
+                ok_create, create_data = post_json(POLICIES_URL, payload)
+
+                if ok_create:
+                    st.success("Política criada com sucesso. Atualize a página para visualizar.")
+                    st.json(create_data)
+                else:
+                    show_api_error("Erro ao criar política", create_data)
+
+        st.markdown("### Atualizar política existente")
+
+        with st.form("editar_politica"):
+            policy_id = st.number_input("ID da política", min_value=1, value=1, step=1)
+
+            edit_name = st.text_input("Nome da política", value="Política Atualizada", key="edit_name")
+            edit_operation_type = st.selectbox(
+                "Tipo de operação",
+                ["campo", "transporte", "proximidade_agua", "all"],
+                key="edit_operation_type"
+            )
+
+            edit_min_risk_alert = st.number_input("Score mínimo para alerta", value=40.0, key="edit_min_risk_alert")
+            edit_min_risk_block = st.number_input("Score mínimo para bloqueio", value=70.0, key="edit_min_risk_block")
+            edit_max_speed = st.number_input("Velocidade máxima", value=25.0, key="edit_max_speed")
+            edit_max_slope = st.number_input("Inclinação máxima", value=15.0, key="edit_max_slope")
+            edit_min_distance_water = st.number_input("Distância mínima da água", value=30.0, key="edit_min_distance_water")
+            edit_max_rain_mm = st.number_input("Chuva máxima (mm)", value=20.0, key="edit_max_rain_mm")
+
+            edit_block_on_water = st.checkbox("Bloquear se estiver próximo da água", value=False, key="edit_block_on_water")
+            edit_block_on_unstable_soil = st.checkbox("Bloquear se solo estiver instável", value=False, key="edit_block_on_unstable_soil")
+            edit_is_active = st.checkbox("Política ativa", value=True, key="edit_is_active")
+
+            submitted_update = st.form_submit_button("Atualizar política")
+
+            if submitted_update:
+                payload = {
+                    "name": edit_name,
+                    "operation_type": edit_operation_type,
+                    "min_risk_alert": edit_min_risk_alert,
+                    "min_risk_block": edit_min_risk_block,
+                    "max_speed": edit_max_speed,
+                    "max_slope": edit_max_slope,
+                    "min_distance_water": edit_min_distance_water,
+                    "max_rain_mm": edit_max_rain_mm,
+                    "block_on_water": edit_block_on_water,
+                    "block_on_unstable_soil": edit_block_on_unstable_soil,
+                    "is_active": edit_is_active,
+                }
+
+                ok_update, update_data = put_json(f"{POLICIES_URL}/{int(policy_id)}", payload)
+
+                if ok_update:
+                    st.success("Política atualizada com sucesso.")
+                    st.json(update_data)
+                else:
+                    show_api_error("Erro ao atualizar política", update_data)
+
+with tab_map["Simulador de risco"]:
     st.markdown("### Simulador de risco")
     st.caption("Compare um cenário base com um cenário simulado para tomada de decisão preventiva.")
 
@@ -583,6 +801,13 @@ with tab7:
                 st.write(f"**Alerta:** {sim_result.get('alert_level', '-')}")
                 st.info(sim_result.get("recommendation", "Sem recomendação"))
 
+            st.markdown("#### Resumo executivo do cenário simulado")
+            sim_exec = sim_result.get("executive_explanation", {})
+            if sim_exec and isinstance(sim_exec, dict):
+                st.info(sim_exec.get("summary", "Sem resumo executivo disponível."))
+            else:
+                st.info("Sem resumo executivo disponível.")
+
             st.markdown("#### Fatores do cenário simulado")
             sim_explanation = sim_result.get("explanation", {})
             if sim_explanation and isinstance(sim_explanation, dict):
@@ -595,14 +820,13 @@ with tab7:
 
             st.markdown("#### Resposta completa do cenário simulado")
             st.json(sim_result)
-
         else:
             if not ok_base:
                 show_api_error("Erro no cálculo do cenário base", base_result)
             if not ok_sim:
                 show_api_error("Erro no cálculo do cenário simulado", sim_result)
-            
-with tab8:
+
+with tab_map["IA e ML"]:
     st.markdown("### Inteligência Artificial e Machine Learning")
 
     ok_status, status_data = get_json(ML_STATUS_URL)
