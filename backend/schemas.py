@@ -111,3 +111,34 @@ class AlertPolicyResponse(AlertPolicyBase):
 
     class Config:
         from_attributes = True
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    role: str
+
+
+class MeResponse(BaseModel):
+    username: str
+    full_name: str
+    email: str | None = None
+    role: str
+    is_active: bool
+    last_login_at: datetime | None = None
+
+
+class AccessEventResponse(BaseModel):
+    id: int
+    username: str
+    role: str
+    action: str
+    endpoint: str
+    success: bool
+    detail: dict | None = None
+    timestamp: datetime

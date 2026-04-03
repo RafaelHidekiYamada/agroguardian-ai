@@ -3,8 +3,10 @@ from datetime import datetime
 from typing import Dict, Any
 import numpy as np
 
-from fastapi import FastAPI, Depends, Query
+from fastapi import FastAPI, Depends, Query, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 
 from .config import settings
 from .database import Base, engine, get_db
@@ -15,6 +17,10 @@ from .schemas import (
     PredictionResponse,
     SafeRouteRequest,
     SafeRouteResponse,
+    SummaryResponse,
+    LoginRequest,
+    TokenResponse,
+    MeResponse,
     AlertPolicyCreate,
     AlertPolicyUpdate,
     AlertPolicyResponse,
@@ -37,6 +43,13 @@ from .reports import (
     list_farms_data,
     list_equipment_data,
 )
+from .security import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    get_current_user,
+    require_roles,
+)
 
 app = FastAPI(title=settings.app_name, version=settings.model_version)
 MODEL_BUNDLE = None
@@ -48,6 +61,7 @@ def startup_event():
     Base.metadata.create_all(bind=engine)
     MODEL_BUNDLE = load_runtime_model()
     _seed_if_needed()
+    _seed_users_if_needed()
 
 
 def _seed_if_needed():
@@ -251,6 +265,52 @@ def _seed_if_needed():
     finally:
         db.close()
 
+def _seed_users_if_needed():
+    db = next(get_db())
+    try:
+        if db.query(models.UserAccount).count() > 0:
+            return
+
+        users = [
+            models.UserAccount(
+                username="admin",
+                full_name="Administrador AgroGuardian",
+                email="admin@agroguardian.ai",
+                hashed_password=hash_password("admin123"),
+                role="admin",
+                is_active=True,
+            ),
+            models.UserAccount(
+                username="sompo",
+                full_name="Analista Sompo",
+                email="sompo@agroguardian.ai",
+                hashed_password=hash_password("sompo123"),
+                role="sompo",
+                is_active=True,
+            ),
+            models.UserAccount(
+                username="gestor",
+                full_name="Gestor de Fazenda",
+                email="gestor@agroguardian.ai",
+                hashed_password=hash_password("gestor123"),
+                role="gestor",
+                is_active=True,
+            ),
+            models.UserAccount(
+                username="operador",
+                full_name="Operador de Campo",
+                email="operador@agroguardian.ai",
+                hashed_password=hash_password("operador123"),
+                role="operador",
+                is_active=True,
+            ),
+        ]
+
+        db.add_all(users)
+        db.commit()
+    finally:
+        db.close()
+
 
 def _risk_label(score: float) -> str:
     if score <= 40:
@@ -394,6 +454,181 @@ def _apply_alert_policy(
         return alert_level, recommendation, policy_alerts
 
     return current_alert_level, current_recommendation, policy_alerts
+
+@app.post("/api/v1/auth/login", response_model=TokenResponse)
+def auth_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    user = (
+        db.query(models.UserAccount)
+        .filter(models.UserAccount.username == payload.username)
+        .first()
+    )
+
+    if not user or not verify_password(payload.password, user.hashed_password):
+        db.add(
+            models.AccessEvent(
+                username=payload.username,
+                role="unknown",
+                action="login",
+                endpoint=str(request.url.path),
+                success=False,
+                detail={"reason": "invalid_credentials"},
+            )
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário ou senha inválidos",
+        )
+
+    if not user.is_active:
+        db.add(
+            models.AccessEvent(
+                username=user.username,
+                role=user.role,
+                action="login",
+                endpoint=str(request.url.path),
+                success=False,
+                detail={"reason": "inactive_user"},
+            )
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Usuário inativo",
+        )
+
+    access_token = create_access_token(
+        {"sub": user.username, "role": user.role}
+    )
+
+    user.last_login_at = datetime.utcnow()
+    db.add(
+        models.AccessEvent(
+            username=user.username,
+            role=user.role,
+            action="login",
+            endpoint=str(request.url.path),
+            success=True,
+            detail={"message": "login_realizado"},
+        )
+    )
+    db.commit()
+
+    return TokenResponse(
+        access_token=access_token,
+        username=user.username,
+        role=user.role,
+    )
+
+@app.post("/api/v1/auth/token", response_model=TokenResponse)
+def auth_token(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(models.UserAccount)
+        .filter(models.UserAccount.username == form_data.username)
+        .first()
+    )
+
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        db.add(
+            models.AccessEvent(
+                username=form_data.username,
+                role="unknown",
+                action="login_oauth2",
+                endpoint=str(request.url.path),
+                success=False,
+                detail={"reason": "invalid_credentials"},
+            )
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário ou senha inválidos",
+        )
+
+    if not user.is_active:
+        db.add(
+            models.AccessEvent(
+                username=user.username,
+                role=user.role,
+                action="login_oauth2",
+                endpoint=str(request.url.path),
+                success=False,
+                detail={"reason": "inactive_user"},
+            )
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Usuário inativo",
+        )
+
+    access_token = create_access_token(
+        {"sub": user.username, "role": user.role}
+    )
+
+    user.last_login_at = datetime.utcnow()
+    db.add(
+        models.AccessEvent(
+            username=user.username,
+            role=user.role,
+            action="login_oauth2",
+            endpoint=str(request.url.path),
+            success=True,
+            detail={"message": "login_realizado_oauth2"},
+        )
+    )
+    db.commit()
+
+    return TokenResponse(
+        access_token=access_token,
+        username=user.username,
+        role=user.role,
+    )
+
+
+@app.get("/api/v1/auth/me", response_model=MeResponse)
+def auth_me(current_user=Depends(get_current_user)):
+    return MeResponse(
+        username=current_user.username,
+        full_name=current_user.full_name,
+        email=current_user.email,
+        role=current_user.role,
+        is_active=current_user.is_active,
+        last_login_at=current_user.last_login_at,
+    )
+
+
+@app.get("/api/v1/auth/access-events")
+def auth_access_events(
+    current_user=Depends(require_roles("admin", "sompo")),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(models.AccessEvent)
+        .order_by(desc(models.AccessEvent.timestamp))
+        .limit(50)
+        .all()
+    )
+
+    return {
+        "events": [
+            {
+                "id": row.id,
+                "username": row.username,
+                "role": row.role,
+                "action": row.action,
+                "endpoint": row.endpoint,
+                "success": row.success,
+                "detail": row.detail,
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+            }
+            for row in rows
+        ]
+    }
 
 
 @app.post("/api/v1/risk/predict", response_model=PredictionResponse)

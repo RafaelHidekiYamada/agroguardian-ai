@@ -136,3 +136,28 @@ class AlertPolicy(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    full_name = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=True)
+    hashed_password = Column(String, nullable=False)
+    role = Column(String, nullable=False, default="operador")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True)
+
+class AccessEvent(Base):
+    __tablename__ = "access_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    endpoint = Column(String, nullable=False)
+    success = Column(Boolean, nullable=False, default=True)
+    detail = Column(JSON, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
