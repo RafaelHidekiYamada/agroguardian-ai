@@ -847,7 +847,10 @@ def dashboard_alerts(db: Session = Depends(get_db)):
 
 
 @app.get("/api/v1/dashboard/audit")
-def dashboard_audit(db: Session = Depends(get_db)):
+def dashboard_audit(
+    current_user=Depends(require_roles("admin", "sompo")),
+    db: Session = Depends(get_db),
+):
     return build_audit(db)
 
 
@@ -860,14 +863,25 @@ def list_farms(db: Session = Depends(get_db)):
 def list_equipment(db: Session = Depends(get_db)):
     return list_equipment_data(db)
 
-@app.get("/api/v1/policies/alerts", response_model=list[AlertPolicyResponse])
-def list_alert_policies(db: Session = Depends(get_db)):
-    return db.query(models.AlertPolicy).order_by(models.AlertPolicy.id.asc()).all()
-
-
 @app.post("/api/v1/policies/alerts", response_model=AlertPolicyResponse)
-def create_alert_policy(payload: AlertPolicyCreate, db: Session = Depends(get_db)):
-    policy = models.AlertPolicy(**payload.model_dump())
+def create_alert_policy(
+    payload: AlertPolicyCreate,
+    current_user=Depends(require_roles("admin", "gestor")),
+    db: Session = Depends(get_db),
+):
+    policy = models.AlertPolicy(
+        name=payload.name,
+        operation_type=payload.operation_type,
+        min_risk_alert=payload.min_risk_alert,
+        min_risk_block=payload.min_risk_block,
+        max_speed=payload.max_speed,
+        max_slope=payload.max_slope,
+        min_distance_water=payload.min_distance_water,
+        max_rain_mm=payload.max_rain_mm,
+        block_on_water=payload.block_on_water,
+        block_on_unstable_soil=payload.block_on_unstable_soil,
+        is_active=payload.is_active,
+    )
     db.add(policy)
     db.commit()
     db.refresh(policy)
@@ -875,14 +889,23 @@ def create_alert_policy(payload: AlertPolicyCreate, db: Session = Depends(get_db
 
 
 @app.put("/api/v1/policies/alerts/{policy_id}", response_model=AlertPolicyResponse)
-def update_alert_policy(policy_id: int, payload: AlertPolicyUpdate, db: Session = Depends(get_db)):
-    policy = db.query(models.AlertPolicy).filter(models.AlertPolicy.id == policy_id).first()
+def update_alert_policy(
+    policy_id: int,
+    payload: AlertPolicyUpdate,
+    current_user=Depends(require_roles("admin", "gestor")),
+    db: Session = Depends(get_db),
+):
+    policy = db.query(models.AlertPolicy).filter(
+        models.AlertPolicy.id == policy_id
+    ).first()
+
     if not policy:
-        raise ValueError("Política não encontrada")
+        raise HTTPException(status_code=404, detail="Política não encontrada")
 
     update_data = payload.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(policy, key, value)
+
+    for field, value in update_data.items():
+        setattr(policy, field, value)
 
     db.commit()
     db.refresh(policy)
