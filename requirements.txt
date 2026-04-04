@@ -1,5 +1,6 @@
 fastapi==0.135.2
 uvicorn==0.42.0
+gunicorn==23.0.0
 streamlit==1.55.0
 pandas==2.3.3
 numpy==2.4.4
@@ -11,7 +12,6 @@ folium==0.20.0
 joblib==1.5.3
 altair==6.0.0
 pydantic==2.12.5
-python-jose[cryptography]
-passlib
-python-multipart
-gunicorn
+python-jose[cryptography]==3.5.0
+passlib==1.7.4
+python-multipart==0.0.22
