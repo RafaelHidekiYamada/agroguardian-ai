@@ -8,6 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
+from .geointelligence import build_geo_context
 from .config import settings
 from .database import Base, engine, get_db
 from . import models
@@ -53,6 +54,12 @@ from .security import (
     create_access_token,
     get_current_user,
     require_roles,
+)
+from .integration_hub import (
+    build_operational_context,
+    build_prediction_trace,
+    build_system_architecture,
+    build_system_status,
 )
 
 app = FastAPI(title=settings.app_name, version=settings.model_version)
@@ -395,69 +402,121 @@ def _get_active_policy(db: Session, operation_type: str):
 
 def _apply_alert_policy(
     risk_score: float,
-    payload: Dict[str, Any],
+    payload: dict,
     policy,
     current_alert_level: str,
     current_recommendation: str,
 ):
-    if not policy:
+    if not policy or not getattr(policy, "is_active", True):
         return current_alert_level, current_recommendation, []
 
-    policy_alerts = []
-    block_reasons = []
+    alerts = []
+    reasons = []
+    should_block = False
 
     velocidade = float(payload.get("velocidade", 0))
     inclinacao = float(payload.get("inclinacao", 0))
-    distancia_agua = float(payload.get("distancia_agua", 9999))
     chuva_mm = float(payload.get("chuva_mm", 0))
+    distancia_agua = float(payload.get("distancia_agua", 999999))
     solo_instavel = int(payload.get("solo_instavel", 0))
 
-    if risk_score >= policy.min_risk_alert:
-        policy_alerts.append({
-            "type": "policy_risk_alert",
-            "severity": "medium",
-            "message": f"Score acima do limite de alerta da política ({policy.min_risk_alert}).",
-        })
+    min_risk_alert = float(getattr(policy, "min_risk_alert", 40))
+    min_risk_block = float(getattr(policy, "min_risk_block", 70))
+    max_speed = float(getattr(policy, "max_speed", 999999))
+    max_slope = float(getattr(policy, "max_slope", 999999))
+    min_distance_water = float(getattr(policy, "min_distance_water", 0))
+    max_rain_mm = float(getattr(policy, "max_rain_mm", 999999))
+    block_on_water = bool(getattr(policy, "block_on_water", False))
+    block_on_unstable_soil = bool(getattr(policy, "block_on_unstable_soil", False))
 
-    if risk_score >= policy.min_risk_block:
-        block_reasons.append(f"Score acima do limite de bloqueio ({policy.min_risk_block})")
-
-    if velocidade > policy.max_speed:
-        block_reasons.append(f"Velocidade acima do limite ({policy.max_speed})")
-
-    if inclinacao > policy.max_slope:
-        block_reasons.append(f"Inclinação acima do limite ({policy.max_slope})")
-
-    if distancia_agua < policy.min_distance_water:
-        policy_alerts.append({
-            "type": "policy_water_distance",
-            "severity": "medium",
-            "message": f"Distância da água abaixo do mínimo da política ({policy.min_distance_water} m).",
-        })
-        if policy.block_on_water:
-            block_reasons.append("Operação próxima à água com bloqueio habilitado")
-
-    if chuva_mm > policy.max_rain_mm:
-        block_reasons.append(f"Chuva acima do limite ({policy.max_rain_mm} mm)")
-
-    if solo_instavel == 1 and policy.block_on_unstable_soil:
-        block_reasons.append("Solo instável com bloqueio habilitado")
-
-    if block_reasons:
-        alert_level = "⛔ Operação bloqueada por política"
-        recommendation = (
-            "Operação bloqueada pela política configurada. Motivos: "
-            + "; ".join(block_reasons)
-            + ". Revise velocidade, clima, inclinação e proximidade da água."
+    if risk_score >= min_risk_alert:
+        alerts.append(
+            {
+                "type": "policy_alert_threshold",
+                "severity": "medium",
+                "message": f"Score acima do limite de alerta da política ({min_risk_alert}).",
+            }
         )
-        policy_alerts.append({
-            "type": "policy_block",
-            "severity": "high",
-            "message": recommendation,
-        })
-        return alert_level, recommendation, policy_alerts
 
-    return current_alert_level, current_recommendation, policy_alerts
+    if velocidade > max_speed:
+        reasons.append(f"velocidade acima do limite ({max_speed})")
+        alerts.append(
+            {
+                "type": "policy_speed",
+                "severity": "medium",
+                "message": f"Velocidade acima do limite da política ({max_speed}).",
+            }
+        )
+
+    if inclinacao > max_slope:
+        reasons.append(f"inclinação acima do limite ({max_slope})")
+        alerts.append(
+            {
+                "type": "policy_slope",
+                "severity": "medium",
+                "message": f"Inclinação acima do limite da política ({max_slope}).",
+            }
+        )
+
+    if chuva_mm > max_rain_mm:
+        reasons.append(f"chuva acima do limite ({max_rain_mm} mm)")
+        alerts.append(
+            {
+                "type": "policy_rain",
+                "severity": "medium",
+                "message": f"Chuva acima do limite da política ({max_rain_mm} mm).",
+            }
+        )
+
+    if distancia_agua < min_distance_water:
+        reasons.append(f"distância da água abaixo do mínimo ({min_distance_water} m)")
+        alerts.append(
+            {
+                "type": "policy_water_distance",
+                "severity": "medium",
+                "message": f"Distância da água abaixo do mínimo da política ({min_distance_water} m).",
+            }
+        )
+        if block_on_water:
+            should_block = True
+
+    if solo_instavel == 1 and block_on_unstable_soil:
+        reasons.append("solo instável com bloqueio habilitado")
+        alerts.append(
+            {
+                "type": "policy_unstable_soil",
+                "severity": "high",
+                "message": "Solo instável com bloqueio habilitado na política.",
+            }
+        )
+        should_block = True
+
+    if risk_score >= min_risk_block:
+        reasons.append(f"score acima do limite de bloqueio ({min_risk_block})")
+        should_block = True
+
+    if should_block:
+        alert_level = "🚫 Operação bloqueada por política"
+        if reasons:
+            recommendation = "Operação bloqueada pela política configurada. Motivos: " + "; ".join(reasons) + "."
+        else:
+            recommendation = "Operação bloqueada pela política configurada."
+        alerts.append(
+            {
+                "type": "policy_block",
+                "severity": "high",
+                "message": recommendation,
+            }
+        )
+        return alert_level, recommendation, alerts
+
+    if alerts:
+        recommendation = current_recommendation
+        if reasons:
+            recommendation = current_recommendation + " Ajustes sugeridos: " + "; ".join(reasons) + "."
+        return current_alert_level, recommendation, alerts
+
+    return current_alert_level, current_recommendation, alerts
 
 @app.post("/api/v1/auth/login", response_model=TokenResponse)
 def auth_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
@@ -639,8 +698,43 @@ def auth_access_events(
 def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
     weather = get_weather(payload.latitude, payload.longitude)
     full_payload = _prepare_prediction(payload, weather)
+    operational_context = {}
+
+    geo_context = build_geo_context(
+        latitude=float(full_payload.get("latitude", 0)),
+        longitude=float(full_payload.get("longitude", 0)),
+        solo_instavel=int(full_payload.get("solo_instavel", 0)),
+        inclinacao=float(full_payload.get("inclinacao", 0)),
+    )
+    full_payload["distancia_agua_manual"] = full_payload.get("distancia_agua", 0)
+    full_payload["distancia_agua"] = float(
+    geo_context.get("nearest_water", {}).get("distance_m", full_payload.get("distancia_agua", 0))
+    )
+
+    operational_context = build_operational_context(
+    input_payload=payload.model_dump(),
+    weather=weather,
+    geo_context=geo_context,
+)
+
     features = build_features(full_payload)
-    risk_score = predict_risk(MODEL_BUNDLE, features)
+    model_risk_score = float(predict_risk(MODEL_BUNDLE, features))
+    geo_risk_points = float(geo_context["geo_risk"]["geo_risk_points"])
+
+    uncapped_final_score = model_risk_score + geo_risk_points
+
+    risk_score = min(
+        100.0,
+        uncapped_final_score,
+    )
+
+    risk_components = {
+        "model_risk_score": round(model_risk_score, 2),
+        "geo_risk_points": round(geo_risk_points, 2),
+        "uncapped_final_score": round(uncapped_final_score, 2),
+        "final_risk_score": round(risk_score, 2),
+    }
+
     risk_label = _risk_label(risk_score)
     alerts = build_alerts(risk_score, full_payload)
     alert_level = alert_summary(alerts)
@@ -676,13 +770,22 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
         recommendation=recommendation,
     )
 
+    prediction_trace = build_prediction_trace(
+    model_version=settings.model_version,
+    features=features,
+    risk_components=risk_components,
+    explanation=explanation,
+    safe_route=route,
+    recommendation=recommendation,
+)
+
     audit_id = write_audit(
         db,
         actor="api",
         action="risk_predict",
         payload={
-            "input": payload.model_dump(),
-            "weather": weather,
+            "operational_context": operational_context,
+            "prediction_trace": prediction_trace,
             "risk_score": risk_score,
             "risk_label": risk_label,
             "alert_level": alert_level,
@@ -752,6 +855,8 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
         safe_route=route,
         explanation=explanation,
         executive_explanation=executive_explanation,
+        geo_context=geo_context,
+        risk_components=risk_components,
         weather=weather,
         audit_id=audit_id,
     )
@@ -960,3 +1065,177 @@ def ml_status():
 @app.get("/api/v1/ml/metrics")
 def ml_metrics():
     return get_ml_metrics()
+
+def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
+    weather = get_weather(payload.latitude, payload.longitude)
+    full_payload = _prepare_prediction(payload, weather)
+
+    geo_context = build_geo_context(
+        latitude=float(full_payload.get("latitude", 0)),
+        longitude=float(full_payload.get("longitude", 0)),
+        solo_instavel=int(full_payload.get("solo_instavel", 0)),
+        inclinacao=float(full_payload.get("inclinacao", 0)),
+    )
+    full_payload["distancia_agua_manual"] = full_payload.get("distancia_agua", 0)
+    full_payload["distancia_agua"] = float(
+    geo_context.get("nearest_water", {}).get("distance_m", full_payload.get("distancia_agua", 0))
+    )
+
+    operational_context = build_operational_context(
+    input_payload=payload.model_dump(),
+    weather=weather,
+    geo_context=geo_context,
+)
+
+    features = build_features(full_payload)
+    model_risk_score = float(predict_risk(MODEL_BUNDLE, features))
+    geo_risk_points = float(geo_context["geo_risk"]["geo_risk_points"])
+
+    uncapped_final_score = model_risk_score + geo_risk_points
+
+    risk_score = min(
+        100.0,
+        uncapped_final_score,
+    )
+
+    risk_components = {
+        "model_risk_score": round(model_risk_score, 2),
+        "geo_risk_points": round(geo_risk_points, 2),
+        "uncapped_final_score": round(uncapped_final_score, 2),
+        "final_risk_score": round(risk_score, 2),
+    }
+
+    risk_label = _risk_label(risk_score)
+    alerts = build_alerts(risk_score, full_payload)
+    alert_level = alert_summary(alerts)
+    recommendation = _recommendation_text(risk_score, full_payload)
+
+    policy = _get_active_policy(db, full_payload["operation_type"])
+    policy_alert_level, policy_recommendation, policy_alerts = _apply_alert_policy(
+        risk_score=risk_score,
+        payload=full_payload,
+        policy=policy,
+        current_alert_level=alert_level,
+        current_recommendation=recommendation,
+    )
+
+    alerts.extend(policy_alerts)
+    alert_level = policy_alert_level
+    recommendation = policy_recommendation
+    route = recommend_route(full_payload)
+
+    explanation = shap_explanation(
+        MODEL_BUNDLE["model"],
+        np.array([list(features.values())]),
+        np.array([list(features.values())]),
+        FEATURE_ORDER,
+    )
+    if not explanation:
+        explanation = heuristic_explanation(full_payload, risk_score)
+
+    executive_explanation = build_executive_explanation(
+        risk_score=risk_score,
+        risk_label=risk_label,
+        explanation=explanation,
+        recommendation=recommendation,
+    )
+
+    prediction_trace = build_prediction_trace(
+    model_version=settings.model_version,
+    features=features,
+    risk_components=risk_components,
+    explanation=explanation,
+    safe_route=route,
+    recommendation=recommendation,
+)
+
+    audit_id = write_audit(
+        db,
+        actor="api",
+        action="risk_predict",
+        payload={
+            "operational_context": operational_context,
+            "prediction_trace": prediction_trace,
+            "risk_score": risk_score,
+            "risk_label": risk_label,
+            "alert_level": alert_level,
+        },
+    )
+
+    db.add(
+        models.PredictionRecord(
+            model_version=settings.model_version,
+            source="api",
+            input_payload=payload.model_dump(),
+            predicted_risk=risk_score,
+            risk_label=risk_label,
+            alert_level=alert_level,
+            explanation=explanation,
+            recommendation=recommendation,
+            safe_route=route["recommended_route"],
+            weather_payload=weather,
+        )
+    )
+
+    db.add(
+        models.TelemetryRecord(
+            equipment_id=payload.equipment_id,
+            farm_id=payload.farm_id,
+            region=payload.region,
+            operation_type=payload.operation_type,
+            clima=full_payload["clima"],
+            umidade_solo=full_payload["umidade_solo"],
+            inclinacao=full_payload["inclinacao"],
+            distancia_agua=full_payload["distancia_agua"],
+            velocidade=full_payload["velocidade"],
+            historico_sinistros=full_payload["historico_sinistros"],
+            chuva_mm=full_payload["chuva_mm"],
+            solo_instavel=full_payload["solo_instavel"],
+            latitude=full_payload["latitude"],
+            longitude=full_payload["longitude"],
+            predicted_risk=risk_score,
+            risk_label=risk_label,
+            alert_level=alert_level,
+            recommendation=recommendation,
+            safe_route=route["recommended_route"],
+            explanation=explanation,
+        )
+    )
+
+    for a in alerts:
+        db.add(
+            models.AlertRecord(
+                alert_type=a["type"],
+                severity=a["severity"],
+                message=a["message"],
+                context=payload.model_dump(),
+            )
+        )
+
+    db.commit()
+
+    return PredictionResponse(
+        timestamp=datetime.utcnow(),
+        model_version=settings.model_version,
+        risk_score=round(risk_score, 2),
+        risk_label=risk_label,
+        alert_level=alert_level,
+        alerts=alerts,
+        recommendation=recommendation,
+        safe_route=route,
+        explanation=explanation,
+        executive_explanation=executive_explanation,
+        geo_context=geo_context,
+        risk_components=risk_components,
+        weather=weather,
+        audit_id=audit_id,
+    )
+
+@app.get("/api/v1/system/architecture")
+def get_system_architecture():
+    return build_system_architecture()
+
+
+@app.get("/api/v1/system/status")
+def get_system_status():
+    return build_system_status()

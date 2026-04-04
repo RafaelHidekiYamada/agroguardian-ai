@@ -35,6 +35,8 @@ class PredictionResponse(BaseModel):
     weather: Dict[str, Any]
     audit_id: int
     executive_explanation: dict | None = None
+    geo_context: dict | None = None
+    risk_components: dict | None = None
 
 class SafeRouteRequest(BaseModel):
     origin_name: str = "Ponto atual"

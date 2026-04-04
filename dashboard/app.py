@@ -5,6 +5,8 @@ import pandas as pd
 import requests
 import streamlit as st
 
+import pydeck as pdk
+
 st.set_page_config(page_title="AgroGuardian AI", layout="wide")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
@@ -261,6 +263,16 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
         st.warning("Clima externo indisponível. O sistema aplicou fallback automático.")
 
     st.subheader("Resumo executivo da IA")
+    st.subheader("Composição do score")
+    risk_components = resultado.get("risk_components", {})
+    if risk_components and isinstance(risk_components, dict):
+        rc1, rc2, rc3, rc4 = st.columns(4)
+        rc1.metric("Score do modelo", risk_components.get("model_risk_score", "-"))
+        rc2.metric("Risco geográfico", risk_components.get("geo_risk_points", "-"))
+        rc3.metric("Score bruto", risk_components.get("uncapped_final_score", "-"))
+        rc4.metric("Score final", risk_components.get("final_risk_score", "-"))
+    else:
+        st.info("Sem composição de score disponível.")
     executive_explanation = resultado.get("executive_explanation", {})
     if executive_explanation and isinstance(executive_explanation, dict):
         st.info(executive_explanation.get("summary", "Sem resumo executivo disponível."))
@@ -286,9 +298,87 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     st.subheader("Recomendação")
     st.info(resultado.get("recommendation", "Sem recomendação"))
 
+    st.subheader("Contexto geográfico")
+    geo_context = resultado.get("geo_context", {})
+
+    if geo_context and isinstance(geo_context, dict):
+        nearest_water = geo_context.get("nearest_water", {})
+        geo_risk = geo_context.get("geo_risk", {})
+
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("Zona geográfica", geo_risk.get("geo_zone", "-"))
+        g2.metric("Zona hídrica", geo_risk.get("water_zone", "-"))
+        g3.metric("Distância da água (m)", nearest_water.get("distance_m", "-"))
+        g4.metric("Agravantes de terreno", geo_risk.get("terrain_aggravation_points", "-"))
+
+        st.info(geo_risk.get("geo_reason", "Sem justificativa geográfica."))
+        st.write(f"**Ponto de água mais próximo:** {nearest_water.get('nearest_name', '-')}")
+    else:
+        st.info("Sem contexto geográfico disponível.")
+
     st.subheader("Mapa da operação")
-    mapa_df = pd.DataFrame([{"lat": float(latitude), "lon": float(longitude)}])
-    st.map(mapa_df)
+
+    nearest_water = {}
+    if geo_context and isinstance(geo_context, dict):
+        nearest_water = geo_context.get("nearest_water", {})
+
+    map_rows = [
+        {
+            "lat": float(latitude),
+            "lon": float(longitude),
+            "label": "Máquina",
+            "color": [255, 60, 60],
+            "radius": 80,
+        }
+    ]
+
+    if nearest_water.get("nearest_lat") is not None and nearest_water.get("nearest_lon") is not None:
+        map_rows.append(
+            {
+                "lat": float(nearest_water["nearest_lat"]),
+                "lon": float(nearest_water["nearest_lon"]),
+                "label": "Água mais próxima",
+                "color": [60, 160, 255],
+                "radius": 70,
+            }
+        )
+
+    mapa_df = pd.DataFrame(map_rows)
+
+    view_state = pdk.ViewState(
+        latitude=float(latitude),
+        longitude=float(longitude),
+        zoom=13,
+        pitch=0,
+    )
+
+    scatter_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=mapa_df,
+        get_position="[lon, lat]",
+        get_color="color",
+        get_radius="radius",
+        pickable=True,
+    )
+
+    text_layer = pdk.Layer(
+        "TextLayer",
+        data=mapa_df,
+        get_position="[lon, lat]",
+        get_text="label",
+        get_size=14,
+        get_color=[255, 255, 255],
+        get_alignment_baseline="'top'",
+    )
+
+    st.pydeck_chart(
+        pdk.Deck(
+            initial_view_state=view_state,
+            layers=[scatter_layer, text_layer],
+            tooltip={"text": "{label}"},
+        ),
+        use_container_width=True,
+    )
 
     st.subheader("Principais fatores de risco")
     explicacao = resultado.get("explanation", {})
@@ -314,8 +404,8 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     st.subheader("Explicação")
     st.json(resultado.get("explanation", {}))
 
-    st.subheader("Resposta completa")
-    st.json(resultado)
+    with st.expander("Resposta completa da API"):
+        st.json(resultado)
 
 
 init_auth_state()
@@ -388,7 +478,8 @@ with tab_map["Operação em tempo real"]:
 
     umidade_solo = st.sidebar.slider("Umidade do solo", 0, 100, 80)
     inclinacao = st.sidebar.slider("Inclinação do terreno", 0, 90, 12)
-    distancia_agua = st.sidebar.slider("Distância da água", 0, 1000, 20)
+    distancia_agua = st.sidebar.slider("Distância da água (manual / fallback)", 0, 1000, 20)
+    st.sidebar.caption("A análise principal usa a distância geográfica calculada pelas coordenadas.")
     velocidade = st.sidebar.slider("Velocidade da máquina", 0, 200, 15)
     historico_sinistros = st.sidebar.slider("Histórico de sinistros", 0, 20, 2)
     solo_instavel = st.sidebar.selectbox("Solo instável", [0, 1])
@@ -708,6 +799,29 @@ with tab_map["Simulador de risco"]:
             key="scenario_name"
         )
 
+        alterar_localizacao = st.checkbox(
+            "Alterar localização no cenário simulado",
+            value=False,
+            key="alterar_localizacao_sim",
+        )
+
+        sim2_latitude = sim_latitude
+        sim2_longitude = sim_longitude
+
+        if alterar_localizacao:
+            sim2_latitude = st.number_input(
+                "Latitude simulada",
+                value=float(sim_latitude),
+                format="%.6f",
+                key="sim2_latitude",
+            )
+            sim2_longitude = st.number_input(
+                "Longitude simulada",
+                value=float(sim_longitude),
+                format="%.6f",
+                key="sim2_longitude",
+            )
+
         sim2_clima = st.selectbox("Clima simulado", ["sol", "nublado", "chuva"], index=2, key="sim2_clima")
         sim2_umidade_solo = st.slider("Umidade do solo simulada", 0, 100, 90, key="sim2_umidade_solo")
         sim2_inclinacao = st.slider("Inclinação simulada", 0, 90, 18, key="sim2_inclinacao")
@@ -751,8 +865,8 @@ with tab_map["Simulador de risco"]:
             "historico_sinistros": int(sim2_historico),
             "chuva_mm": int(sim2_chuva_mm),
             "solo_instavel": int(sim2_solo_instavel),
-            "latitude": float(sim_latitude),
-            "longitude": float(sim_longitude),
+            "latitude": float(sim2_latitude),
+            "longitude": float(sim2_longitude),
         }
 
         ok_base, base_result = post_json(PREDICT_URL, payload_base)
@@ -765,17 +879,25 @@ with tab_map["Simulador de risco"]:
             sim_score = float(sim_result.get("risk_score", 0))
             delta = round(sim_score - base_score, 2)
 
-            c1, c2, c3 = st.columns(3)
+            base_components = base_result.get("risk_components", {})
+            sim_components = sim_result.get("risk_components", {})
+
+            base_raw = float(base_components.get("uncapped_final_score", base_score))
+            sim_raw = float(sim_components.get("uncapped_final_score", sim_score))
+            raw_delta = round(sim_raw - base_raw, 2)
+
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Risco base", base_score)
             c2.metric("Risco simulado", sim_score)
-            c3.metric("Variação", delta)
+            c3.metric("Variação final", delta)
+            c4.metric("Variação bruta", raw_delta)
 
-            if delta > 0:
-                st.error(f"O cenário simulado aumentou o risco em {delta} pontos.")
-            elif delta < 0:
-                st.success(f"O cenário simulado reduziu o risco em {abs(delta)} pontos.")
+            if raw_delta > 0:
+                st.error(f"O cenário simulado aumentou o risco bruto em {raw_delta} pontos.")
+            elif raw_delta < 0:
+                st.success(f"O cenário simulado reduziu o risco bruto em {abs(raw_delta)} pontos.")
             else:
-                st.info("O cenário simulado manteve o mesmo nível de risco.")
+                st.info("O cenário simulado manteve o mesmo risco bruto.")
 
             comp_df = pd.DataFrame(
                 {
@@ -807,6 +929,35 @@ with tab_map["Simulador de risco"]:
                 st.info(sim_exec.get("summary", "Sem resumo executivo disponível."))
             else:
                 st.info("Sem resumo executivo disponível.")
+            
+            st.markdown("#### Contexto geográfico comparado")
+
+            base_geo = base_result.get("geo_context", {})
+            sim_geo = sim_result.get("geo_context", {})
+
+            gc1, gc2 = st.columns(2)
+
+            with gc1:
+                st.markdown("**Base**")
+                if base_geo and isinstance(base_geo, dict):
+                    base_nearest = base_geo.get("nearest_water", {})
+                    base_risk = base_geo.get("geo_risk", {})
+                    st.write(f"Zona: **{base_risk.get('geo_zone', '-')}**")
+                    st.write(f"Distância da água: **{base_nearest.get('distance_m', '-')} m**")
+                    st.write(f"Risco geográfico: **{base_risk.get('geo_risk_points', '-')}**")
+                else:
+                    st.info("Sem contexto geográfico base.")
+
+            with gc2:
+                st.markdown("**Simulado**")
+                if sim_geo and isinstance(sim_geo, dict):
+                    sim_nearest = sim_geo.get("nearest_water", {})
+                    sim_risk = sim_geo.get("geo_risk", {})
+                    st.write(f"Zona: **{sim_risk.get('geo_zone', '-')}**")
+                    st.write(f"Distância da água: **{sim_nearest.get('distance_m', '-')} m**")
+                    st.write(f"Risco geográfico: **{sim_risk.get('geo_risk_points', '-')}**")
+                else:
+                    st.info("Sem contexto geográfico simulado.")
 
             st.markdown("#### Fatores do cenário simulado")
             sim_explanation = sim_result.get("explanation", {})
@@ -818,8 +969,8 @@ with tab_map["Simulador de risco"]:
             else:
                 st.info("Sem fatores suficientes para o gráfico do cenário simulado.")
 
-            st.markdown("#### Resposta completa do cenário simulado")
-            st.json(sim_result)
+            with st.expander("Resposta completa do cenário simulado"):
+                st.json(sim_result)
         else:
             if not ok_base:
                 show_api_error("Erro no cálculo do cenário base", base_result)
