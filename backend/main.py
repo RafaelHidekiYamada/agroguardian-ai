@@ -32,6 +32,7 @@ from .ml_registry import load_runtime_model, get_ml_status, get_ml_metrics
 from .alerts import build_alerts, alert_summary
 from .weather_service import get_weather
 from .route_ai import recommend_route
+from .decision_engine import calculate_contextual_risk, build_decision_support
 from .explainability import (
     heuristic_explanation,
     shap_explanation,
@@ -708,32 +709,27 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
     )
     full_payload["distancia_agua_manual"] = full_payload.get("distancia_agua", 0)
     full_payload["distancia_agua"] = float(
-    geo_context.get("nearest_water", {}).get("distance_m", full_payload.get("distancia_agua", 0))
+        geo_context.get("nearest_water", {}).get(
+            "distance_m",
+            full_payload.get("distancia_agua", 0),
+        )
     )
 
     operational_context = build_operational_context(
-    input_payload=payload.model_dump(),
-    weather=weather,
-    geo_context=geo_context,
-)
+        input_payload=payload.model_dump(),
+        weather=weather,
+        geo_context=geo_context,
+    )
 
     features = build_features(full_payload)
     model_risk_score = float(predict_risk(MODEL_BUNDLE, features))
-    geo_risk_points = float(geo_context["geo_risk"]["geo_risk_points"])
-
-    uncapped_final_score = model_risk_score + geo_risk_points
-
-    risk_score = min(
-        100.0,
-        uncapped_final_score,
+    risk_components = calculate_contextual_risk(
+        model_risk_score=model_risk_score,
+        payload=full_payload,
+        geo_context=geo_context,
+        weather=weather,
     )
-
-    risk_components = {
-        "model_risk_score": round(model_risk_score, 2),
-        "geo_risk_points": round(geo_risk_points, 2),
-        "uncapped_final_score": round(uncapped_final_score, 2),
-        "final_risk_score": round(risk_score, 2),
-    }
+    risk_score = float(risk_components["final_risk_score"])
 
     risk_label = _risk_label(risk_score)
     alerts = build_alerts(risk_score, full_payload)
@@ -763,21 +759,37 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
     if not explanation:
         explanation = heuristic_explanation(full_payload, risk_score)
 
+    decision_support = build_decision_support(
+        risk_score=risk_score,
+        risk_label=risk_label,
+        alert_level=alert_level,
+        payload=full_payload,
+        risk_components=risk_components,
+        alerts=alerts,
+        recommendation=recommendation,
+        route=route,
+        explanation=explanation,
+        geo_context=geo_context,
+    )
+
     executive_explanation = build_executive_explanation(
         risk_score=risk_score,
         risk_label=risk_label,
         explanation=explanation,
         recommendation=recommendation,
+        decision_support=decision_support,
+        safe_route=route,
     )
 
     prediction_trace = build_prediction_trace(
-    model_version=settings.model_version,
-    features=features,
-    risk_components=risk_components,
-    explanation=explanation,
-    safe_route=route,
-    recommendation=recommendation,
-)
+        model_version=settings.model_version,
+        features=features,
+        risk_components=risk_components,
+        explanation=explanation,
+        safe_route=route,
+        recommendation=recommendation,
+        decision_support=decision_support,
+    )
 
     audit_id = write_audit(
         db,
@@ -789,6 +801,7 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
             "risk_score": risk_score,
             "risk_label": risk_label,
             "alert_level": alert_level,
+            "decision_support": decision_support,
         },
     )
 
@@ -857,6 +870,7 @@ def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
         executive_explanation=executive_explanation,
         geo_context=geo_context,
         risk_components=risk_components,
+        decision_support=decision_support,
         weather=weather,
         audit_id=audit_id,
     )
@@ -940,6 +954,7 @@ def safe_route(payload: SafeRouteRequest, db: Session = Depends(get_db)):
         route_score=route["route_score"],
         alternatives=route["alternatives"],
         rationale=route["rationale"],
+        route_explanation=route.get("route_explanation"),
     )
 
 
@@ -1066,7 +1081,7 @@ def ml_status():
 def ml_metrics():
     return get_ml_metrics()
 
-def predict(payload: TelemetryInput, db: Session = Depends(get_db)):
+def _legacy_predict_unused(payload: TelemetryInput, db: Session = Depends(get_db)):
     weather = get_weather(payload.latitude, payload.longitude)
     full_payload = _prepare_prediction(payload, weather)
 

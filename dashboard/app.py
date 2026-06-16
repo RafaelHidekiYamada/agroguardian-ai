@@ -9,7 +9,12 @@ import pydeck as pdk
 
 st.set_page_config(page_title="AgroGuardian AI", layout="wide")
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+API_HOSTPORT = os.getenv("API_HOSTPORT", "").strip()
+API_BASE_URL = os.getenv("API_BASE_URL", "").strip()
+if not API_BASE_URL and API_HOSTPORT:
+    API_BASE_URL = f"http://{API_HOSTPORT}"
+if not API_BASE_URL:
+    API_BASE_URL = "http://127.0.0.1:8000"
 
 PREDICT_URL = f"{API_BASE_URL}/api/v1/risk/predict"
 SIMULATE_URL = f"{API_BASE_URL}/api/v1/simulate"
@@ -25,6 +30,125 @@ ML_STATUS_URL = f"{API_BASE_URL}/api/v1/ml/status"
 ML_METRICS_URL = f"{API_BASE_URL}/api/v1/ml/metrics"
 AUTH_LOGIN_URL = f"{API_BASE_URL}/api/v1/auth/login"
 AUTH_ME_URL = f"{API_BASE_URL}/api/v1/auth/me"
+
+
+def apply_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --ag-bg: #071016;
+            --ag-panel: #0d1b22;
+            --ag-panel-2: #10242c;
+            --ag-line: rgba(115, 232, 214, 0.26);
+            --ag-cyan: #49ead8;
+            --ag-green: #8cffb2;
+            --ag-amber: #ffd166;
+            --ag-magenta: #ff5ea8;
+            --ag-text: #edf7f5;
+            --ag-muted: #9db7b3;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at 12% 0%, rgba(73, 234, 216, 0.16), transparent 28rem),
+                linear-gradient(135deg, #071016 0%, #0a1118 42%, #101317 100%);
+            color: var(--ag-text);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #081217 0%, #0d1b22 100%);
+            border-right: 1px solid var(--ag-line);
+        }
+
+        h1, h2, h3 {
+            color: var(--ag-text);
+            letter-spacing: 0;
+        }
+
+        h1 {
+            font-weight: 800;
+        }
+
+        div[data-testid="stMetric"] {
+            background: linear-gradient(180deg, rgba(16, 36, 44, 0.95), rgba(8, 18, 23, 0.95));
+            border: 1px solid var(--ag-line);
+            border-radius: 8px;
+            padding: 0.8rem 0.9rem;
+            box-shadow: 0 0 0 1px rgba(73, 234, 216, 0.04), 0 14px 38px rgba(0, 0, 0, 0.22);
+        }
+
+        div[data-testid="stMetric"] label,
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+            color: var(--ag-muted);
+        }
+
+        .stButton > button,
+        .stFormSubmitButton > button {
+            background: linear-gradient(90deg, var(--ag-cyan), var(--ag-green));
+            color: #071016;
+            border: 0;
+            border-radius: 8px;
+            font-weight: 800;
+            box-shadow: 0 0 22px rgba(73, 234, 216, 0.22);
+        }
+
+        .stButton > button:hover,
+        .stFormSubmitButton > button:hover {
+            border: 0;
+            color: #071016;
+            filter: brightness(1.06);
+        }
+
+        div[data-testid="stAlert"] {
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .ag-panel {
+            background: linear-gradient(180deg, rgba(16, 36, 44, 0.95), rgba(8, 18, 23, 0.95));
+            border: 1px solid var(--ag-line);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 0.45rem 0 1rem 0;
+        }
+
+        .ag-panel strong {
+            color: var(--ag-cyan);
+        }
+
+        .ag-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            margin-top: 0.55rem;
+        }
+
+        .ag-chip {
+            border: 1px solid var(--ag-line);
+            background: rgba(73, 234, 216, 0.08);
+            border-radius: 999px;
+            padding: 0.22rem 0.62rem;
+            color: var(--ag-text);
+            font-size: 0.86rem;
+        }
+
+        .ag-chip.warn {
+            border-color: rgba(255, 209, 102, 0.45);
+            background: rgba(255, 209, 102, 0.12);
+        }
+
+        .ag-chip.hot {
+            border-color: rgba(255, 94, 168, 0.5);
+            background: rgba(255, 94, 168, 0.12);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+apply_theme()
 
 
 def init_auth_state() -> None:
@@ -240,6 +364,38 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     col2.metric("Nível de risco", resultado.get("risk_label", "-"))
     col3.metric("Alerta", resultado.get("alert_level", "-"))
 
+    decision_support = resultado.get("decision_support", {})
+    if decision_support and isinstance(decision_support, dict):
+        st.subheader("Centro de decisao da IA")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Decisao", decision_support.get("decision_label", "-"))
+        d2.metric("Prioridade", decision_support.get("priority", "-"))
+        d3.metric("Confianca", decision_support.get("confidence_label", "-"))
+        d4.metric("Score confianca", decision_support.get("confidence", "-"))
+
+        st.markdown(
+            f"""
+            <div class="ag-panel">
+                <strong>Por que:</strong> {decision_support.get("why", "-")}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        action_cols = st.columns(3)
+        with action_cols[0]:
+            st.markdown("#### Acoes")
+            for item in decision_support.get("operational_actions", []):
+                st.write(f"- {item}")
+        with action_cols[1]:
+            st.markdown("#### Monitoramento")
+            for item in decision_support.get("monitoring_plan", []):
+                st.write(f"- {item}")
+        with action_cols[2]:
+            st.markdown("#### Escalonamento")
+            for item in decision_support.get("escalation", []):
+                st.write(f"- {item}")
+
     if risk_score > 70:
         st.error("Risco alto")
     elif risk_score > 40:
@@ -276,6 +432,11 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     executive_explanation = resultado.get("executive_explanation", {})
     if executive_explanation and isinstance(executive_explanation, dict):
         st.info(executive_explanation.get("summary", "Sem resumo executivo disponível."))
+        next_actions = executive_explanation.get("next_actions", [])
+        if next_actions:
+            st.markdown("#### Proximas acoes")
+            for action in next_actions:
+                st.write(f"- {action}")
     else:
         st.info("Sem resumo executivo disponível.")
 
@@ -399,7 +560,53 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
         st.info("A API não retornou fatores suficientes para o gráfico.")
 
     st.subheader("Rota segura")
-    st.json(resultado.get("safe_route", {}))
+    safe_route = resultado.get("safe_route", {})
+    if safe_route and isinstance(safe_route, dict):
+        route_explanation = safe_route.get("route_explanation", {})
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Rota", safe_route.get("recommended_route", "-"))
+        r2.metric("Score da rota", safe_route.get("route_score", "-"))
+        r3.metric("Risco da rota", safe_route.get("risk_label", "-"))
+
+        st.markdown(
+            f"""
+            <div class="ag-panel">
+                <strong>Justificativa:</strong> {safe_route.get("rationale", "-")}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        critical = route_explanation.get("critical_segment", {})
+        if critical:
+            st.warning(
+                f"Trecho critico: {critical.get('name', '-')} | "
+                f"risco {critical.get('risk_score', '-')} | {critical.get('reason', '-')}"
+            )
+
+        steps = route_explanation.get("operator_steps", [])
+        if steps:
+            st.markdown("#### Passos para o operador")
+            for step in steps:
+                st.write(f"- {step}")
+
+        alternatives = safe_route.get("alternatives", [])
+        if alternatives:
+            route_df = pd.DataFrame(
+                [
+                    {
+                        "Rota": item.get("name"),
+                        "Score": item.get("route_score"),
+                        "Risco": item.get("risk_label"),
+                        "Distancia km": item.get("distance_km"),
+                        "Minutos": item.get("estimated_minutes"),
+                    }
+                    for item in alternatives
+                ]
+            )
+            st.dataframe(route_df, use_container_width=True)
+    else:
+        st.info("Sem rota segura retornada.")
 
     st.subheader("Explicação")
     st.json(resultado.get("explanation", {}))
@@ -995,23 +1202,66 @@ with tab_map["IA e ML"]:
     with col2:
         st.markdown("#### Métricas dos modelos")
         if ok_metrics:
+            if isinstance(metrics_data, dict):
+                best_model = metrics_data.get("best_model") or metrics_data.get("tree_search", {})
+                recommended_model = metrics_data.get("recommended_model", "-")
+
+                if best_model:
+                    regression = best_model.get("regression", {})
+                    classification = best_model.get("classification_at_70", {})
+                    curve_point = best_model.get("best_curve_point", classification)
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Modelo vencedor", best_model.get("model_name", recommended_model))
+                    m2.metric("RMSE", regression.get("rmse", "-"))
+                    m3.metric("Accuracy", classification.get("accuracy", "-"))
+                    m4.metric("F1 alto risco", curve_point.get("f1", "-"))
+
+                    st.markdown(
+                        f"""
+                        <div class="ag-panel">
+                            <strong>Regra de selecao:</strong> {metrics_data.get("selection_rule", "-")}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    weights = best_model.get("feature_weights", {})
+                    if weights:
+                        st.markdown("#### Melhores pesos das variaveis")
+                        weights_df = pd.DataFrame(
+                            {"Variavel": list(weights.keys()), "Peso": list(weights.values())}
+                        ).set_index("Variavel")
+                        st.bar_chart(weights_df)
+
+                    curve = best_model.get("threshold_curve", [])
+                    if curve:
+                        st.markdown("#### Curva de threshold para alto risco")
+                        curve_df = pd.DataFrame(curve)
+                        st.line_chart(curve_df.set_index("threshold")[["accuracy", "f1", "balanced_accuracy"]])
+
+                    if best_model.get("best_params"):
+                        st.markdown("#### Melhores parametros")
+                        st.json(best_model.get("best_params"))
+
             st.json(metrics_data)
 
             if isinstance(metrics_data, dict):
                 baseline = metrics_data.get("baseline", {})
                 neural = metrics_data.get("neural_network", {})
+                metric_value = lambda item, key: item.get(key, item.get("regression", {}).get(key, 0))
 
                 if baseline and neural:
                     chart_df = pd.DataFrame(
                         {
                             "Modelo": ["Baseline", "Rede Neural"],
                             "R2": [
-                                baseline.get("r2", 0),
-                                neural.get("r2", 0),
+                                metric_value(baseline, "r2"),
+                                metric_value(neural, "r2"),
                             ],
                             "RMSE": [
-                                baseline.get("rmse", 0),
-                                neural.get("rmse", 0),
+                                metric_value(baseline, "rmse"),
+                                metric_value(neural, "rmse"),
                             ],
                         }
                     ).set_index("Modelo")

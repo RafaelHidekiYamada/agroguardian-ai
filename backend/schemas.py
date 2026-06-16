@@ -37,6 +37,7 @@ class PredictionResponse(BaseModel):
     executive_explanation: dict | None = None
     geo_context: dict | None = None
     risk_components: dict | None = None
+    decision_support: dict | None = None
 
 class SafeRouteRequest(BaseModel):
     origin_name: str = "Ponto atual"
@@ -49,6 +50,7 @@ class SafeRouteResponse(BaseModel):
     route_score: float
     alternatives: List[Dict[str, Any]]
     rationale: str
+    route_explanation: Dict[str, Any] | None = None
 
 class SummaryResponse(BaseModel):
     total_predictions: int

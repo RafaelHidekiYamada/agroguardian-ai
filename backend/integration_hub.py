@@ -31,6 +31,7 @@ def build_prediction_trace(
     explanation: Dict[str, Any],
     safe_route: Dict[str, Any],
     recommendation: str,
+    decision_support: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     return {
         "model_version": model_version,
@@ -40,6 +41,7 @@ def build_prediction_trace(
         "explanation": explanation,
         "safe_route": safe_route,
         "recommendation": recommendation,
+        "decision_support": decision_support,
     }
 
 

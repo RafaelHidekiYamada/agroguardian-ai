@@ -16,7 +16,7 @@ from backend.risk_model import FEATURES, _synth_dataset
 BASE_DIR = Path(__file__).resolve().parent
 ARTIFACTS_DIR = BASE_DIR / "saved_models"
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-MODEL_PATH = ARTIFACTS_DIR / "neural_risk_model.joblib"
+MODEL_PATH = ARTIFACTS_DIR / "mlp_regressor.joblib"
 METRICS_PATH = ARTIFACTS_DIR / "neural_metrics.json"
 
 

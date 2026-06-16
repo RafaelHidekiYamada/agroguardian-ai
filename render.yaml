@@ -3,20 +3,32 @@ services:
     name: agroguardian-api
     runtime: python
     plan: free
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn -k uvicorn.workers.UvicornWorker -w 1 -b 0.0.0.0:$PORT backend.main:app
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
       - key: MODEL_VERSION
         value: 1.0.0
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:///./agroguardian.db
 
   - type: web
     name: agroguardian-dashboard
     runtime: python
     plan: free
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
+      - key: API_HOSTPORT
+        fromService:
+          type: web
+          name: agroguardian-api
+          property: hostport
