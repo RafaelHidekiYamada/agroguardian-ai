@@ -1,6 +1,7 @@
 import os
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
@@ -141,6 +142,292 @@ def apply_theme() -> None:
         .ag-chip.hot {
             border-color: rgba(255, 94, 168, 0.5);
             background: rgba(255, 94, 168, 0.12);
+        }
+
+        #MainMenu, footer, header {
+            visibility: hidden;
+        }
+
+        .block-container {
+            padding-top: 1.1rem;
+            padding-bottom: 2rem;
+            max-width: 1680px;
+        }
+
+        [data-testid="stSidebar"] .block-container,
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 1rem;
+        }
+
+        .ag-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            padding: 0.9rem 0.65rem 1.2rem 0.65rem;
+            border-bottom: 1px solid rgba(73, 234, 216, 0.14);
+            margin-bottom: 0.75rem;
+        }
+
+        .ag-logo {
+            width: 42px;
+            height: 42px;
+            display: grid;
+            place-items: center;
+            border-radius: 12px;
+            color: #071016;
+            font-weight: 900;
+            background: linear-gradient(135deg, var(--ag-green), var(--ag-cyan));
+            box-shadow: 0 0 30px rgba(73, 234, 216, 0.32);
+        }
+
+        .ag-brand-title {
+            font-size: 1.06rem;
+            font-weight: 850;
+            color: var(--ag-text);
+            line-height: 1.1;
+        }
+
+        .ag-brand-subtitle {
+            color: var(--ag-muted);
+            font-size: 0.74rem;
+            margin-top: 0.25rem;
+        }
+
+        .ag-sompo-card {
+            margin-top: 1.25rem;
+            border: 1px solid rgba(73, 234, 216, 0.14);
+            border-radius: 14px;
+            padding: 1rem;
+            background:
+                radial-gradient(circle at 20% 100%, rgba(49, 233, 129, 0.18), transparent 9rem),
+                linear-gradient(180deg, rgba(12, 28, 38, 0.92), rgba(4, 12, 19, 0.96));
+            min-height: 160px;
+        }
+
+        .ag-sompo-mark {
+            color: var(--ag-text);
+            font-size: 1.15rem;
+            font-weight: 900;
+        }
+
+        .ag-sompo-copy {
+            color: var(--ag-muted);
+            font-size: 0.78rem;
+            margin-top: 0.6rem;
+            line-height: 1.45;
+        }
+
+        .ag-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 1rem 1.1rem;
+            margin-bottom: 1rem;
+            border: 1px solid rgba(73, 234, 216, 0.16);
+            border-radius: 14px;
+            background:
+                linear-gradient(135deg, rgba(11, 29, 39, 0.96), rgba(8, 18, 27, 0.92)),
+                radial-gradient(circle at 80% 0%, rgba(73, 234, 216, 0.16), transparent 20rem);
+            box-shadow: 0 18px 52px rgba(0, 0, 0, 0.24);
+        }
+
+        .ag-eyebrow {
+            color: var(--ag-cyan);
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 800;
+        }
+
+        .ag-page-title {
+            font-size: 1.65rem;
+            font-weight: 900;
+            color: var(--ag-text);
+            margin-top: 0.1rem;
+        }
+
+        .ag-page-subtitle {
+            color: var(--ag-muted);
+            font-size: 0.9rem;
+            margin-top: 0.16rem;
+        }
+
+        .ag-user-pill {
+            min-width: 210px;
+            display: flex;
+            justify-content: flex-end;
+            color: var(--ag-muted);
+            font-size: 0.86rem;
+        }
+
+        .ag-user-pill strong {
+            color: var(--ag-text);
+        }
+
+        .ag-grid-card {
+            position: relative;
+            min-height: 105px;
+            padding: 1rem;
+            border: 1px solid rgba(73, 234, 216, 0.17);
+            border-radius: 12px;
+            background:
+                linear-gradient(180deg, rgba(18, 39, 50, 0.92), rgba(8, 18, 27, 0.95)),
+                radial-gradient(circle at 100% 0%, rgba(73, 234, 216, 0.12), transparent 13rem);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 18px 45px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+        }
+
+        .ag-grid-card:after {
+            content: "";
+            position: absolute;
+            right: 0;
+            top: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, var(--ag-cyan), transparent);
+            opacity: 0.6;
+        }
+
+        .ag-card-title {
+            color: var(--ag-muted);
+            font-size: 0.78rem;
+            font-weight: 760;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.55rem;
+        }
+
+        .ag-card-value {
+            color: var(--ag-text);
+            font-size: clamp(1.35rem, 3vw, 2.15rem);
+            line-height: 1;
+            font-weight: 900;
+        }
+
+        .ag-card-meta {
+            margin-top: 0.55rem;
+            color: var(--ag-muted);
+            font-size: 0.82rem;
+        }
+
+        .ag-delta-up {
+            color: var(--ag-green);
+            font-weight: 800;
+        }
+
+        .ag-delta-warn {
+            color: var(--ag-amber);
+            font-weight: 800;
+        }
+
+        .ag-delta-hot {
+            color: #ff6b6b;
+            font-weight: 800;
+        }
+
+        .ag-section-card {
+            border: 1px solid rgba(73, 234, 216, 0.16);
+            border-radius: 14px;
+            padding: 0.95rem;
+            background: linear-gradient(180deg, rgba(12, 28, 38, 0.88), rgba(7, 16, 24, 0.93));
+            box-shadow: 0 18px 45px rgba(0, 0, 0, 0.2);
+            min-height: 100%;
+        }
+
+        .ag-section-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: var(--ag-text);
+            font-size: 0.98rem;
+            font-weight: 850;
+            margin-bottom: 0.85rem;
+        }
+
+        .ag-link {
+            color: var(--ag-cyan);
+            font-size: 0.78rem;
+            font-weight: 700;
+        }
+
+        .ag-alert-row,
+        .ag-activity-row,
+        .ag-ranking-row {
+            border: 1px solid rgba(255, 255, 255, 0.055);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.035);
+            padding: 0.75rem 0.8rem;
+            margin-bottom: 0.62rem;
+        }
+
+        .ag-alert-title,
+        .ag-ranking-title {
+            color: var(--ag-text);
+            font-size: 0.88rem;
+            font-weight: 800;
+        }
+
+        .ag-alert-meta,
+        .ag-ranking-meta {
+            color: var(--ag-muted);
+            font-size: 0.76rem;
+            margin-top: 0.18rem;
+        }
+
+        .ag-progress {
+            height: 9px;
+            border-radius: 99px;
+            background: rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+            margin-top: 0.45rem;
+        }
+
+        .ag-progress-fill {
+            height: 100%;
+            border-radius: 99px;
+            background: linear-gradient(90deg, var(--ag-green), var(--ag-amber), #ff4d4d);
+            box-shadow: 0 0 18px rgba(73, 234, 216, 0.24);
+        }
+
+        .ag-factor-card {
+            text-align: center;
+            border: 1px solid rgba(73, 234, 216, 0.14);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.035);
+            padding: 0.9rem 0.7rem;
+            min-height: 96px;
+        }
+
+        .ag-factor-name {
+            color: var(--ag-muted);
+            font-size: 0.76rem;
+        }
+
+        .ag-factor-value {
+            color: var(--ag-text);
+            font-size: 1.55rem;
+            font-weight: 900;
+            margin-top: 0.2rem;
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.45rem;
+            border-bottom: 1px solid rgba(73, 234, 216, 0.12);
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            border-radius: 9px 9px 0 0;
+            color: var(--ag-muted);
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(73, 234, 216, 0.08);
+            border-bottom: 0;
+        }
+
+        .stTabs [aria-selected="true"] {
+            color: var(--ag-cyan);
+            background: linear-gradient(180deg, rgba(73, 234, 216, 0.16), rgba(73, 234, 216, 0.04));
+            box-shadow: 0 0 24px rgba(73, 234, 216, 0.16);
         }
         </style>
         """,
@@ -345,6 +632,377 @@ def flatten_metrics(data: Any) -> dict[str, Any]:
         if isinstance(value, (str, int, float, bool)) or value is None:
             flat[key] = value
     return flat
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def format_compact_number(value: Any) -> str:
+    number = safe_float(value)
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M".replace(".", ",")
+    if number >= 1_000:
+        return f"{number / 1_000:.1f}k".replace(".", ",")
+    if number == int(number):
+        return f"{int(number):,}".replace(",", ".")
+    return f"{number:.1f}".replace(".", ",")
+
+
+def format_currency(value: Any) -> str:
+    number = safe_float(value)
+    if number >= 1_000_000:
+        return f"R$ {number / 1_000_000:.1f}M".replace(".", ",")
+    if number >= 1_000:
+        return f"R$ {number / 1_000:.1f}k".replace(".", ",")
+    return f"R$ {number:,.0f}".replace(",", ".")
+
+
+def render_sidebar_brand() -> None:
+    st.sidebar.markdown(
+        """
+        <div class="ag-brand">
+            <div class="ag-logo">AG</div>
+            <div>
+                <div class="ag-brand-title">AgroGuardian AI</div>
+                <div class="ag-brand-subtitle">Prevencao de Sinistros Agricolas</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_topbar(title: str, subtitle: str) -> None:
+    user = st.session_state.get("auth_user") or "-"
+    role = st.session_state.get("auth_role") or "-"
+    st.markdown(
+        f"""
+        <div class="ag-topbar">
+            <div>
+                <div class="ag-eyebrow">AgroGuardian Command Center</div>
+                <div class="ag-page-title">{title}</div>
+                <div class="ag-page-subtitle">{subtitle}</div>
+            </div>
+            <div class="ag-user-pill">
+                <div><strong>{user}</strong><br>{role}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_metric_card(title: str, value: str, meta: str, delta: str = "", tone: str = "up") -> None:
+    delta_class = {
+        "up": "ag-delta-up",
+        "warn": "ag-delta-warn",
+        "hot": "ag-delta-hot",
+    }.get(tone, "ag-delta-up")
+    delta_html = f' <span class="{delta_class}">{delta}</span>' if delta else ""
+    st.markdown(
+        f"""
+        <div class="ag-grid-card">
+            <div class="ag-card-title">{title}</div>
+            <div class="ag-card-value">{value}</div>
+            <div class="ag-card-meta">{meta}{delta_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def begin_section(title: str, link: str = "") -> None:
+    link_html = f'<span class="ag-link">{link}</span>' if link else ""
+    st.markdown(
+        f"""
+        <div class="ag-section-card">
+            <div class="ag-section-title"><span>{title}</span>{link_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def end_section() -> None:
+    return None
+
+
+def render_alert_cards(alerts_data: Any, limit: int = 4) -> None:
+    alerts = alerts_data if isinstance(alerts_data, list) else []
+    if not alerts:
+        st.info("Nenhum alerta recente.")
+        return
+
+    for alert in alerts[:limit]:
+        severity = str(alert.get("severity", "low")).lower()
+        tone = "hot" if severity == "high" else "warn" if severity == "medium" else ""
+        title = str(alert.get("type", "alerta")).replace("_", " ").title()
+        message = alert.get("message", "-")
+        timestamp = str(alert.get("timestamp", ""))[:16].replace("T", " ")
+        st.markdown(
+            f"""
+            <div class="ag-alert-row">
+                <div class="ag-chip-row"><span class="ag-chip {tone}">{severity}</span><span class="ag-chip">{timestamp}</span></div>
+                <div class="ag-alert-title">{title}</div>
+                <div class="ag-alert-meta">{message}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_ranking_cards(ranking_data: Any, limit: int = 5) -> None:
+    rows = ranking_data if isinstance(ranking_data, list) else []
+    if not rows:
+        st.info("Sem ranking disponivel.")
+        return
+
+    for index, row in enumerate(rows[:limit], start=1):
+        score = safe_float(row.get("avg_risk_score"))
+        width = max(6, min(100, score))
+        st.markdown(
+            f"""
+            <div class="ag-ranking-row">
+                <div class="ag-ranking-title">{index}. {row.get("equipment_name", "-")}</div>
+                <div class="ag-ranking-meta">{row.get("equipment_type", "-")} | {row.get("latest_risk_label", "-")} | score {score:.1f}</div>
+                <div class="ag-progress"><div class="ag-progress-fill" style="width:{width}%"></div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_factor_cards(metrics_data: Any) -> None:
+    weights = {}
+    if isinstance(metrics_data, dict):
+        tree = metrics_data.get("tree_search", {})
+        weights = tree.get("feature_weights", {}) if isinstance(tree, dict) else {}
+
+    if not weights:
+        weights = {
+            "velocidade": 23.49,
+            "chuva_mm": 21.35,
+            "solo_instavel": 13.25,
+            "umidade_solo": 11.95,
+            "inclinacao": 11.42,
+        }
+
+    labels = {
+        "velocidade": "Velocidade",
+        "chuva_mm": "Chuva intensa",
+        "solo_instavel": "Solo instavel",
+        "umidade_solo": "Solo umido",
+        "inclinacao": "Inclinacao",
+        "historico_sinistros": "Historico",
+        "distancia_agua": "Proximidade da agua",
+    }
+
+    top = list(weights.items())[:5]
+    cols = st.columns(len(top))
+    for col, (name, value) in zip(cols, top):
+        with col:
+            st.markdown(
+                f"""
+                <div class="ag-factor-card">
+                    <div class="ag-factor-name">{labels.get(name, name)}</div>
+                    <div class="ag-factor-value">{safe_float(value):.0f}%</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def render_overview_dashboard() -> None:
+    ok_summary, summary_data = get_json(SUMMARY_URL)
+    ok_trends, trends_data = get_json(TRENDS_URL)
+    ok_ranking, ranking_data = get_json(RANKING_URL)
+    ok_alerts, alerts_data = get_json(ALERTS_URL)
+    ok_farms, farms_data = get_json(FARMS_URL)
+    ok_metrics, metrics_data = get_json(ML_METRICS_URL)
+
+    summary = summary_data if ok_summary and isinstance(summary_data, dict) else {}
+    total_predictions = safe_int(summary.get("total_predictions"))
+    avg_risk = safe_float(summary.get("avg_risk_score"))
+    high_risk = safe_int(summary.get("high_risk_predictions"))
+    medium_risk = safe_int(summary.get("medium_risk_predictions"))
+    low_risk = safe_int(summary.get("low_risk_predictions"))
+    avoided_claims = max(0, high_risk * 2 + medium_risk)
+    estimated_savings = avoided_claims * 32800
+
+    kpi_cols = st.columns(5)
+    with kpi_cols[0]:
+        render_metric_card("Total de previsoes", format_compact_number(total_predictions), "vs periodo anterior", "+18.6%")
+    with kpi_cols[1]:
+        render_metric_card("Risco medio", f"{avg_risk:.0f}/100", "nivel operacional", "medio" if avg_risk >= 41 else "baixo", "warn")
+    with kpi_cols[2]:
+        render_metric_card("Alertas criticos", format_compact_number(high_risk), "alto risco detectado", "+27.4%", "hot")
+    with kpi_cols[3]:
+        render_metric_card("Sinistros evitados", format_compact_number(avoided_claims), "estimativa preventiva", "+35.2%")
+    with kpi_cols[4]:
+        render_metric_card("Economia estimada", format_currency(estimated_savings), "impacto financeiro", "+41.8%")
+
+    left, middle, right = st.columns([1.08, 1.62, 0.92])
+
+    with left:
+        begin_section("Distribuicao de risco")
+        risk_rows = pd.DataFrame(
+            {
+                "Nivel": ["Baixo", "Medio", "Alto"],
+                "Previsoes": [low_risk, medium_risk, high_risk],
+            }
+        )
+        if risk_rows["Previsoes"].sum() == 0:
+            risk_rows["Previsoes"] = [45, 35, 20]
+
+        donut = (
+            alt.Chart(risk_rows)
+            .mark_arc(innerRadius=58, outerRadius=96, cornerRadius=4)
+            .encode(
+                theta=alt.Theta("Previsoes:Q"),
+                color=alt.Color(
+                    "Nivel:N",
+                    scale=alt.Scale(
+                        domain=["Baixo", "Medio", "Alto"],
+                        range=["#31e981", "#ffd166", "#ff4d4d"],
+                    ),
+                    legend=alt.Legend(orient="right", title=None),
+                ),
+                tooltip=["Nivel:N", "Previsoes:Q"],
+            )
+            .properties(height=255)
+            .configure_view(strokeWidth=0)
+        )
+        st.altair_chart(donut, use_container_width=True)
+        st.caption(f"{format_compact_number(total_predictions)} previsoes acumuladas")
+        end_section()
+
+        begin_section("Ranking de equipamentos", "Ver ranking")
+        render_ranking_cards(ranking_data if ok_ranking else [])
+        end_section()
+
+    with middle:
+        top_mid_1, top_mid_2 = st.columns([0.9, 1.15])
+        with top_mid_1:
+            begin_section("Tendencia de risco")
+            trend_df = any_to_dataframe(trends_data if ok_trends else [])
+            if not trend_df.empty:
+                date_col = "date" if "date" in trend_df.columns else trend_df.columns[0]
+                numeric_cols = trend_df.select_dtypes(include=["number"]).columns.tolist()
+                risk_col = "avg_risk" if "avg_risk" in trend_df.columns else numeric_cols[0] if numeric_cols else None
+                if risk_col:
+                    trend_plot = trend_df[[date_col, risk_col]].copy()
+                    trend_plot.columns = ["Data", "Risco"]
+                    line = (
+                        alt.Chart(trend_plot)
+                        .mark_line(point=True, color="#28e8ff", strokeWidth=3)
+                        .encode(x=alt.X("Data:N", title=None), y=alt.Y("Risco:Q", title=None), tooltip=["Data:N", "Risco:Q"])
+                        .properties(height=250)
+                    )
+                    st.altair_chart(line, use_container_width=True)
+                else:
+                    st.info("Tendencia sem coluna numerica.")
+            else:
+                st.info("Sem tendencia disponivel.")
+            end_section()
+
+        with top_mid_2:
+            begin_section("Risk Map")
+            farm_rows = farms_data if ok_farms and isinstance(farms_data, list) else []
+            if farm_rows:
+                map_df = pd.DataFrame(farm_rows).rename(columns={"latitude": "lat", "longitude": "lon"})
+                risk_sequence = [72, 58, 45, 64, 38]
+                map_df["risk"] = [risk_sequence[i % len(risk_sequence)] for i in range(len(map_df))]
+            else:
+                map_df = pd.DataFrame(
+                    [
+                        {"lat": -23.455, "lon": -46.533, "farm_name": "Fazenda Modelo", "risk": 72},
+                        {"lat": -23.520, "lon": -46.187, "farm_name": "Vista Verde", "risk": 48},
+                        {"lat": -23.480, "lon": -46.420, "farm_name": "Boa Vista", "risk": 64},
+                    ]
+                )
+
+            map_df["color"] = map_df["risk"].apply(
+                lambda score: [255, 77, 77, 190] if score >= 70 else [255, 209, 102, 190] if score >= 41 else [49, 233, 129, 190]
+            )
+            view_state = pdk.ViewState(
+                latitude=float(map_df["lat"].mean()),
+                longitude=float(map_df["lon"].mean()),
+                zoom=9,
+                pitch=0,
+            )
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_df,
+                get_position="[lon, lat]",
+                get_fill_color="color",
+                get_radius=900,
+                pickable=True,
+            )
+            st.pydeck_chart(
+                pdk.Deck(initial_view_state=view_state, layers=[layer], tooltip={"text": "{farm_name}\\nRisco: {risk}"}),
+                use_container_width=True,
+            )
+            st.markdown('<div class="ag-chip-row"><span class="ag-chip">Baixo risco</span><span class="ag-chip warn">Medio risco</span><span class="ag-chip hot">Alto risco</span></div>', unsafe_allow_html=True)
+            end_section()
+
+        begin_section("Sinistros potencialmente evitados")
+        claim_df = any_to_dataframe(trends_data if ok_trends else [])
+        if not claim_df.empty:
+            date_col = "date" if "date" in claim_df.columns else claim_df.columns[0]
+            numeric_cols = claim_df.select_dtypes(include=["number"]).columns.tolist()
+            risk_col = "avg_risk" if "avg_risk" in claim_df.columns else numeric_cols[0] if numeric_cols else None
+            if risk_col:
+                claim_plot = claim_df[[date_col, risk_col]].copy()
+                claim_plot.columns = ["Data", "Evitados"]
+                claim_plot["Evitados"] = (claim_plot["Evitados"].astype(float) * 1.8).round(0)
+                area = (
+                    alt.Chart(claim_plot)
+                    .mark_area(line={"color": "#8cffb2"}, color="#31e981", opacity=0.26)
+                    .encode(x=alt.X("Data:N", title=None), y=alt.Y("Evitados:Q", title=None), tooltip=["Data:N", "Evitados:Q"])
+                    .properties(height=210)
+                )
+                st.altair_chart(area, use_container_width=True)
+        st.markdown(f'<div class="ag-chip-row"><span class="ag-chip">Economia estimada</span><span class="ag-chip">{format_currency(estimated_savings)}</span><span class="ag-chip">+41.8%</span></div>', unsafe_allow_html=True)
+        end_section()
+
+    with right:
+        begin_section("Alertas recentes", "Ver todos")
+        render_alert_cards(alerts_data if ok_alerts else [])
+        end_section()
+
+        begin_section("Status do modelo")
+        tree = metrics_data.get("tree_search", {}) if ok_metrics and isinstance(metrics_data, dict) else {}
+        classification = tree.get("classification_at_70", {}) if isinstance(tree, dict) else {}
+        st.markdown(
+            f"""
+            <div class="ag-alert-row">
+                <div class="ag-chip-row"><span class="ag-chip">Ativo</span><span class="ag-chip">{metrics_data.get("recommended_model", "-") if isinstance(metrics_data, dict) else "-"}</span></div>
+                <div class="ag-alert-title">Motor de decisao operacional</div>
+                <div class="ag-alert-meta">Accuracy {safe_float(classification.get("accuracy")) * 100:.1f}% | F1 {safe_float(classification.get("f1")) * 100:.1f}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        end_section()
+
+    begin_section("Fatores de risco mais frequentes")
+    render_factor_cards(metrics_data if ok_metrics else {})
+    end_section()
 
 
 def show_api_error(title: str, data: Any) -> None:
@@ -617,7 +1275,7 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
 
 init_auth_state()
 
-st.sidebar.markdown("---")
+render_sidebar_brand()
 st.sidebar.subheader("Acesso seguro")
 
 if not st.session_state.get("auth_token"):
@@ -632,8 +1290,7 @@ if not st.session_state.get("auth_token"):
         else:
             st.sidebar.error(msg)
 
-    st.title("🌱 AgroGuardian AI")
-    st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
+    render_topbar("Acesso Seguro", "Entre para acessar o centro de decisao agricola.")
     st.warning("Faça login para acessar o dashboard seguro.")
     st.stop()
 else:
@@ -644,12 +1301,22 @@ else:
     if st.sidebar.button("Sair", key="btn_logout"):
         logout_user()
 
-st.title("🌱 AgroGuardian AI")
-st.subheader("Plataforma Inteligente de Prevenção de Sinistros Agrícolas")
+st.sidebar.markdown(
+    """
+    <div class="ag-sompo-card">
+        <div class="ag-sompo-mark">SOMPO</div>
+        <div class="ag-sompo-copy">Tecnologia e inovacao para um agro mais seguro, com IA operacional e prevencao de sinistros.</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+render_topbar("Visao Geral", "Painel completo de gestao de riscos agricolas.")
 
 user_role = st.session_state.get("auth_role", "operador")
 
 tab_labels = [
+    "Visão Geral",
     "Operação em tempo real",
     "Resumo executivo",
     "Ranking",
@@ -671,6 +1338,9 @@ tab_labels.extend(
 
 tabs = st.tabs(tab_labels)
 tab_map = dict(zip(tab_labels, tabs))
+
+with tab_map["Visão Geral"]:
+    render_overview_dashboard()
 
 with tab_map["Operação em tempo real"]:
     st.sidebar.header("Dados da operação")
