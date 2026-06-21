@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any
 
 import altair as alt
@@ -445,6 +446,7 @@ def init_auth_state() -> None:
         "auth_role": None,
         "auth_full_name": None,
         "auth_email": None,
+        "login_busy": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -460,44 +462,51 @@ def get_auth_headers() -> dict[str, str]:
 
 
 def login_user(username: str, password: str) -> tuple[bool, str]:
+    username = username.strip()
+    if not username or not password:
+        return False, "Informe usuario e senha."
+
     try:
         response = requests.post(
             AUTH_LOGIN_URL,
             json={"username": username, "password": password},
-            timeout=20,
+            timeout=35,
         )
+
+        if response.status_code == 429:
+            time.sleep(2)
+            response = requests.post(
+                AUTH_LOGIN_URL,
+                json={"username": username, "password": password},
+                timeout=35,
+            )
+            if response.status_code == 429:
+                return False, "Servidor ocupado por alguns segundos. Aguarde e tente entrar novamente."
 
         if response.status_code != 200:
             try:
                 data = response.json()
                 return False, data.get("detail", "Falha no login")
             except Exception:
-                return False, response.text
+                return False, "Nao foi possivel autenticar agora. Tente novamente em alguns segundos."
 
         login_data = response.json()
         token = login_data.get("access_token")
-
-        me_response = requests.get(
-            AUTH_ME_URL,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=20,
-        )
-
-        if me_response.status_code != 200:
-            return False, "Login realizado, mas falhou ao carregar perfil do usuário."
-
-        me_data = me_response.json()
+        if not token:
+            return False, "Login sem token retornado pela API."
 
         st.session_state["auth_token"] = token
-        st.session_state["auth_user"] = me_data.get("username")
-        st.session_state["auth_role"] = me_data.get("role")
-        st.session_state["auth_full_name"] = me_data.get("full_name")
-        st.session_state["auth_email"] = me_data.get("email")
+        st.session_state["auth_user"] = login_data.get("username", username)
+        st.session_state["auth_role"] = login_data.get("role", "operador")
+        st.session_state["auth_full_name"] = login_data.get("username", username)
+        st.session_state["auth_email"] = None
 
         return True, "Login realizado com sucesso."
 
-    except requests.exceptions.RequestException as e:
-        return False, f"Erro de conexão no login: {e}"
+    except requests.exceptions.Timeout:
+        return False, "A API demorou para responder. Aguarde alguns segundos e tente novamente."
+    except requests.exceptions.RequestException:
+        return False, "Conexao com a API instavel. Aguarde alguns segundos e tente novamente."
 
 
 def logout_user() -> None:
@@ -1279,11 +1288,20 @@ render_sidebar_brand()
 st.sidebar.subheader("Acesso seguro")
 
 if not st.session_state.get("auth_token"):
-    login_username = st.sidebar.text_input("Usuário", key="login_username")
-    login_password = st.sidebar.text_input("Senha", type="password", key="login_password")
+    with st.sidebar.form("login_form"):
+        login_username = st.text_input("Usuário", key="login_username")
+        login_password = st.text_input("Senha", type="password", key="login_password")
+        submitted_login = st.form_submit_button(
+            "Entrar",
+            disabled=bool(st.session_state.get("login_busy")),
+        )
 
-    if st.sidebar.button("Entrar", key="btn_login"):
-        ok, msg = login_user(login_username, login_password)
+    if submitted_login and not st.session_state.get("login_busy"):
+        st.session_state["login_busy"] = True
+        with st.sidebar:
+            with st.spinner("Entrando..."):
+                ok, msg = login_user(login_username, login_password)
+        st.session_state["login_busy"] = False
         if ok:
             st.sidebar.success(msg)
             st.rerun()
