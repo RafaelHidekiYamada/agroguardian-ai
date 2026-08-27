@@ -1,0 +1,92 @@
+{
+  "dataset": "nasa_power_agroguardian_training.csv",
+  "created_at_utc": "2026-08-20T12:24:31.300172",
+  "source": "NASA POWER Daily API",
+  "source_url": "https://power.larc.nasa.gov/api/temporal/daily/point",
+  "parameters": [
+    "T2M",
+    "RH2M",
+    "PS",
+    "PRECTOTCORR",
+    "WS10M"
+  ],
+  "start": "20240101",
+  "end": "20251231",
+  "regions": [
+    {
+      "region": "Guarulhos - SP",
+      "latitude": -23.455,
+      "longitude": -46.533,
+      "slope_mean": 8.0,
+      "water_distance_mean": 120.0,
+      "incident_bias": 2.5
+    },
+    {
+      "region": "Ribeirao Preto - SP",
+      "latitude": -21.1775,
+      "longitude": -47.8103,
+      "slope_mean": 5.5,
+      "water_distance_mean": 210.0,
+      "incident_bias": 1.8
+    },
+    {
+      "region": "Rio Verde - GO",
+      "latitude": -17.7923,
+      "longitude": -50.9192,
+      "slope_mean": 4.5,
+      "water_distance_mean": 260.0,
+      "incident_bias": 1.4
+    },
+    {
+      "region": "Sorriso - MT",
+      "latitude": -12.5425,
+      "longitude": -55.7211,
+      "slope_mean": 3.5,
+      "water_distance_mean": 340.0,
+      "incident_bias": 1.1
+    },
+    {
+      "region": "Londrina - PR",
+      "latitude": -23.3045,
+      "longitude": -51.1696,
+      "slope_mean": 7.0,
+      "water_distance_mean": 180.0,
+      "incident_bias": 1.9
+    },
+    {
+      "region": "Luis Eduardo Magalhaes - BA",
+      "latitude": -12.0956,
+      "longitude": -45.7866,
+      "slope_mean": 4.0,
+      "water_distance_mean": 300.0,
+      "incident_bias": 1.2
+    },
+    {
+      "region": "Petrolina - PE",
+      "latitude": -9.3891,
+      "longitude": -40.503,
+      "slope_mean": 3.0,
+      "water_distance_mean": 230.0,
+      "incident_bias": 1.6
+    }
+  ],
+  "rows": 5117,
+  "features": [
+    "umidade_solo",
+    "inclinacao",
+    "distancia_agua",
+    "velocidade",
+    "historico_sinistros",
+    "chuva_mm",
+    "solo_instavel",
+    "clima_code",
+    "operation_code",
+    "temperatura_c",
+    "umidade_ar",
+    "pressao_hpa",
+    "distancia_obstaculo",
+    "gps_accuracy_m"
+  ],
+  "target": "risk_score",
+  "labeling_note": "Meteorologia historica real da NASA POWER. O target de risco e heuristico-operacional ate haver base real de sinistros/equipamentos."
+}

@@ -3,5 +3,10 @@ __pycache__/
 .venv/
 .env
 agroguardian.db
+*.pre-alembic-backup-*.sqlite
+test_agroguardian_pytest.db
+migration_smoke.sqlite
+legacy_migration_smoke.sqlite
+.alembic_autogen.sqlite
 artifacts/*.joblib
 .streamlit/

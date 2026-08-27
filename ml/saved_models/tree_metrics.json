@@ -1,11 +1,14 @@
 {
   "training": {
-    "dataset": "synthetic_operational_risk",
-    "n_samples": 7000,
-    "n_train": 5460,
-    "n_test": 1540,
+    "dataset": "nasa_power_agroguardian_training",
+    "source": "NASA POWER Daily API",
+    "path": "C:\\Users\\rafae\\Desktop\\agroguardian_ai\\ml\\data\\nasa_power_agroguardian_training.csv",
+    "n_samples": 5117,
+    "n_train": 3991,
+    "n_test": 1126,
     "high_risk_threshold": 70.0,
-    "selection_rule": "menor RMSE, desempate por F1 e balanced accuracy"
+    "selection_rule": "menor RMSE, desempate por F1 e balanced accuracy",
+    "labeling_note": "Treino usa meteorologia historica real quando disponivel; target de risco e heuristico-operacional ate haver sinistros reais."
   },
   "tree_models": [
     {
@@ -16,38 +19,43 @@
         "min_samples_split": 8
       },
       "regression": {
-        "mae": 5.3554,
-        "rmse": 8.7097,
-        "r2": 0.6373
+        "mae": 3.5629,
+        "rmse": 4.8363,
+        "r2": 0.9387
       },
       "classification_at_70": {
         "threshold": 70.0,
-        "accuracy": 0.9156,
-        "balanced_accuracy": 0.7761,
-        "precision": 0.9462,
-        "recall": 0.9588,
-        "f1": 0.9525,
-        "roc_auc": 0.9364
+        "accuracy": 0.9707,
+        "balanced_accuracy": 0.9299,
+        "precision": 0.9313,
+        "recall": 0.8713,
+        "f1": 0.9003,
+        "roc_auc": 0.9901
       },
       "best_curve_point": {
-        "threshold": 65.0,
-        "accuracy": 0.9188,
-        "balanced_accuracy": 0.7208,
-        "precision": 0.9314,
-        "recall": 0.9801,
-        "f1": 0.9551,
-        "roc_auc": 0.9364
+        "threshold": 70.0,
+        "accuracy": 0.9707,
+        "balanced_accuracy": 0.9299,
+        "precision": 0.9313,
+        "recall": 0.8713,
+        "f1": 0.9003,
+        "roc_auc": 0.9901
       },
       "feature_weights": {
-        "velocidade": 23.41,
-        "chuva_mm": 20.89,
-        "umidade_solo": 13.79,
-        "solo_instavel": 11.73,
-        "historico_sinistros": 11.67,
-        "inclinacao": 11.37,
-        "distancia_agua": 6.18,
-        "clima_code": 0.52,
-        "operation_code": 0.45
+        "solo_instavel": 53.51,
+        "umidade_solo": 20.67,
+        "velocidade": 10.75,
+        "distancia_agua": 6.83,
+        "inclinacao": 3.37,
+        "distancia_obstaculo": 1.97,
+        "chuva_mm": 1.85,
+        "historico_sinistros": 0.54,
+        "pressao_hpa": 0.18,
+        "temperatura_c": 0.12,
+        "umidade_ar": 0.1,
+        "gps_accuracy_m": 0.08,
+        "operation_code": 0.03,
+        "clima_code": 0.0
       }
     },
     {
@@ -58,80 +66,90 @@
         "n_estimators": 320
       },
       "regression": {
-        "mae": 4.2435,
-        "rmse": 6.3411,
-        "r2": 0.8078
+        "mae": 2.2559,
+        "rmse": 3.1685,
+        "r2": 0.9737
       },
       "classification_at_70": {
         "threshold": 70.0,
-        "accuracy": 0.9377,
-        "balanced_accuracy": 0.7838,
-        "precision": 0.9463,
-        "recall": 0.9853,
-        "f1": 0.9654,
-        "roc_auc": 0.9697
+        "accuracy": 0.984,
+        "balanced_accuracy": 0.9594,
+        "precision": 0.9693,
+        "recall": 0.924,
+        "f1": 0.9461,
+        "roc_auc": 0.9976
       },
       "best_curve_point": {
         "threshold": 70.0,
-        "accuracy": 0.9377,
-        "balanced_accuracy": 0.7838,
-        "precision": 0.9463,
-        "recall": 0.9853,
-        "f1": 0.9654,
-        "roc_auc": 0.9697
+        "accuracy": 0.984,
+        "balanced_accuracy": 0.9594,
+        "precision": 0.9693,
+        "recall": 0.924,
+        "f1": 0.9461,
+        "roc_auc": 0.9976
       },
       "feature_weights": {
-        "velocidade": 23.12,
-        "chuva_mm": 20.76,
-        "umidade_solo": 13.37,
-        "historico_sinistros": 12.01,
-        "inclinacao": 11.97,
-        "solo_instavel": 10.8,
-        "distancia_agua": 6.1,
-        "clima_code": 1.12,
-        "operation_code": 0.76
+        "solo_instavel": 52.96,
+        "umidade_solo": 20.65,
+        "velocidade": 10.77,
+        "distancia_agua": 6.67,
+        "inclinacao": 3.49,
+        "chuva_mm": 1.85,
+        "distancia_obstaculo": 1.85,
+        "historico_sinistros": 0.73,
+        "pressao_hpa": 0.31,
+        "umidade_ar": 0.23,
+        "temperatura_c": 0.22,
+        "gps_accuracy_m": 0.19,
+        "operation_code": 0.06,
+        "clima_code": 0.02
       }
     },
     {
       "model_name": "extra_trees",
       "best_params": {
-        "max_depth": null,
+        "max_depth": 16,
         "min_samples_leaf": 2,
-        "n_estimators": 320
+        "n_estimators": 180
       },
       "regression": {
-        "mae": 4.1173,
-        "rmse": 6.1349,
-        "r2": 0.8201
+        "mae": 2.5609,
+        "rmse": 3.5313,
+        "r2": 0.9673
       },
       "classification_at_70": {
         "threshold": 70.0,
-        "accuracy": 0.939,
-        "balanced_accuracy": 0.7893,
-        "precision": 0.9476,
-        "recall": 0.9853,
-        "f1": 0.9661,
-        "roc_auc": 0.9727
+        "accuracy": 0.9787,
+        "balanced_accuracy": 0.9418,
+        "precision": 0.9682,
+        "recall": 0.8889,
+        "f1": 0.9268,
+        "roc_auc": 0.997
       },
       "best_curve_point": {
-        "threshold": 72.5,
-        "accuracy": 0.9429,
-        "balanced_accuracy": 0.832,
-        "precision": 0.9588,
-        "recall": 0.9772,
-        "f1": 0.9679,
-        "roc_auc": 0.9727
+        "threshold": 67.5,
+        "accuracy": 0.9831,
+        "balanced_accuracy": 0.9708,
+        "precision": 0.9368,
+        "recall": 0.9532,
+        "f1": 0.9449,
+        "roc_auc": 0.997
       },
       "feature_weights": {
-        "velocidade": 24.18,
-        "chuva_mm": 19.96,
-        "umidade_solo": 12.92,
-        "inclinacao": 11.38,
-        "historico_sinistros": 11.37,
-        "solo_instavel": 9.97,
-        "distancia_agua": 5.73,
-        "clima_code": 2.49,
-        "operation_code": 2.0
+        "solo_instavel": 53.83,
+        "umidade_solo": 17.78,
+        "velocidade": 10.48,
+        "distancia_agua": 5.46,
+        "inclinacao": 3.54,
+        "umidade_ar": 2.44,
+        "chuva_mm": 2.14,
+        "historico_sinistros": 1.18,
+        "distancia_obstaculo": 0.73,
+        "pressao_hpa": 0.71,
+        "clima_code": 0.68,
+        "operation_code": 0.48,
+        "temperatura_c": 0.29,
+        "gps_accuracy_m": 0.24
       }
     },
     {
@@ -143,81 +161,91 @@
         "subsample": 0.85
       },
       "regression": {
-        "mae": 3.7923,
-        "rmse": 5.6805,
-        "r2": 0.8457
+        "mae": 0.9986,
+        "rmse": 1.4503,
+        "r2": 0.9945
       },
       "classification_at_70": {
         "threshold": 70.0,
-        "accuracy": 0.9429,
-        "balanced_accuracy": 0.8058,
-        "precision": 0.9516,
-        "recall": 0.9853,
-        "f1": 0.9682,
-        "roc_auc": 0.977
+        "accuracy": 0.9947,
+        "balanced_accuracy": 0.9897,
+        "precision": 0.9825,
+        "recall": 0.9825,
+        "f1": 0.9825,
+        "roc_auc": 0.9998
       },
       "best_curve_point": {
         "threshold": 70.0,
-        "accuracy": 0.9429,
-        "balanced_accuracy": 0.8058,
-        "precision": 0.9516,
-        "recall": 0.9853,
-        "f1": 0.9682,
-        "roc_auc": 0.977
+        "accuracy": 0.9947,
+        "balanced_accuracy": 0.9897,
+        "precision": 0.9825,
+        "recall": 0.9825,
+        "f1": 0.9825,
+        "roc_auc": 0.9998
       },
       "feature_weights": {
-        "velocidade": 25.12,
-        "chuva_mm": 22.13,
-        "umidade_solo": 12.56,
-        "solo_instavel": 11.7,
-        "inclinacao": 11.11,
-        "historico_sinistros": 10.98,
-        "distancia_agua": 5.15,
-        "clima_code": 0.92,
-        "operation_code": 0.32
+        "solo_instavel": 33.73,
+        "umidade_solo": 29.44,
+        "chuva_mm": 11.82,
+        "velocidade": 11.03,
+        "distancia_agua": 6.2,
+        "inclinacao": 3.78,
+        "distancia_obstaculo": 2.07,
+        "historico_sinistros": 1.44,
+        "operation_code": 0.27,
+        "pressao_hpa": 0.15,
+        "umidade_ar": 0.04,
+        "temperatura_c": 0.01,
+        "gps_accuracy_m": 0.01,
+        "clima_code": 0.0
       }
     },
     {
       "model_name": "hist_gradient_boosting",
       "best_params": {
-        "l2_regularization": 0.0,
-        "learning_rate": 0.04,
+        "l2_regularization": 0.05,
+        "learning_rate": 0.07,
         "max_iter": 260,
-        "max_leaf_nodes": 31
+        "max_leaf_nodes": 15
       },
       "regression": {
-        "mae": 3.6557,
-        "rmse": 5.6202,
-        "r2": 0.849
+        "mae": 0.9862,
+        "rmse": 1.4495,
+        "r2": 0.9945
       },
       "classification_at_70": {
         "threshold": 70.0,
-        "accuracy": 0.9455,
-        "balanced_accuracy": 0.8216,
-        "precision": 0.9557,
-        "recall": 0.9838,
-        "f1": 0.9695,
-        "roc_auc": 0.9761
+        "accuracy": 0.9929,
+        "balanced_accuracy": 0.9814,
+        "precision": 0.988,
+        "recall": 0.9649,
+        "f1": 0.9763,
+        "roc_auc": 0.9996
       },
       "best_curve_point": {
         "threshold": 70.0,
-        "accuracy": 0.9455,
-        "balanced_accuracy": 0.8216,
-        "precision": 0.9557,
-        "recall": 0.9838,
-        "f1": 0.9695,
-        "roc_auc": 0.9761
+        "accuracy": 0.9929,
+        "balanced_accuracy": 0.9814,
+        "precision": 0.988,
+        "recall": 0.9649,
+        "f1": 0.9763,
+        "roc_auc": 0.9996
       },
       "feature_weights": {
-        "velocidade": 23.49,
-        "chuva_mm": 21.35,
-        "solo_instavel": 13.25,
-        "umidade_solo": 11.95,
-        "inclinacao": 11.42,
-        "historico_sinistros": 10.11,
-        "distancia_agua": 6.83,
-        "clima_code": 1.21,
-        "operation_code": 0.39
+        "umidade_solo": 22.64,
+        "solo_instavel": 18.82,
+        "velocidade": 18.36,
+        "chuva_mm": 10.86,
+        "distancia_agua": 10.38,
+        "inclinacao": 7.77,
+        "distancia_obstaculo": 5.86,
+        "historico_sinistros": 3.36,
+        "operation_code": 1.37,
+        "pressao_hpa": 0.47,
+        "umidade_ar": 0.07,
+        "gps_accuracy_m": 0.02,
+        "clima_code": 0.01,
+        "temperatura_c": 0.01
       }
     }
   ],
@@ -225,234 +253,239 @@
   "best_model": {
     "model_name": "hist_gradient_boosting",
     "best_params": {
-      "l2_regularization": 0.0,
-      "learning_rate": 0.04,
+      "l2_regularization": 0.05,
+      "learning_rate": 0.07,
       "max_iter": 260,
-      "max_leaf_nodes": 31
+      "max_leaf_nodes": 15
     },
     "regression": {
-      "mae": 3.6557,
-      "rmse": 5.6202,
-      "r2": 0.849
+      "mae": 0.9862,
+      "rmse": 1.4495,
+      "r2": 0.9945
     },
     "classification_at_70": {
       "threshold": 70.0,
-      "accuracy": 0.9455,
-      "balanced_accuracy": 0.8216,
-      "precision": 0.9557,
-      "recall": 0.9838,
-      "f1": 0.9695,
-      "roc_auc": 0.9761
+      "accuracy": 0.9929,
+      "balanced_accuracy": 0.9814,
+      "precision": 0.988,
+      "recall": 0.9649,
+      "f1": 0.9763,
+      "roc_auc": 0.9996
     },
     "best_curve_point": {
       "threshold": 70.0,
-      "accuracy": 0.9455,
-      "balanced_accuracy": 0.8216,
-      "precision": 0.9557,
-      "recall": 0.9838,
-      "f1": 0.9695,
-      "roc_auc": 0.9761
+      "accuracy": 0.9929,
+      "balanced_accuracy": 0.9814,
+      "precision": 0.988,
+      "recall": 0.9649,
+      "f1": 0.9763,
+      "roc_auc": 0.9996
     },
     "feature_weights": {
-      "velocidade": 23.49,
-      "chuva_mm": 21.35,
-      "solo_instavel": 13.25,
-      "umidade_solo": 11.95,
-      "inclinacao": 11.42,
-      "historico_sinistros": 10.11,
-      "distancia_agua": 6.83,
-      "clima_code": 1.21,
-      "operation_code": 0.39
+      "umidade_solo": 22.64,
+      "solo_instavel": 18.82,
+      "velocidade": 18.36,
+      "chuva_mm": 10.86,
+      "distancia_agua": 10.38,
+      "inclinacao": 7.77,
+      "distancia_obstaculo": 5.86,
+      "historico_sinistros": 3.36,
+      "operation_code": 1.37,
+      "pressao_hpa": 0.47,
+      "umidade_ar": 0.07,
+      "gps_accuracy_m": 0.02,
+      "clima_code": 0.01,
+      "temperatura_c": 0.01
     },
     "threshold_curve": [
       {
         "threshold": 35.0,
-        "accuracy": 0.8831,
-        "balanced_accuracy": 0.5055,
-        "precision": 0.883,
+        "accuracy": 0.397,
+        "balanced_accuracy": 0.6445,
+        "precision": 0.2012,
         "recall": 1.0,
-        "f1": 0.9378,
-        "roc_auc": 0.9761
+        "f1": 0.335,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 37.5,
-        "accuracy": 0.8831,
-        "balanced_accuracy": 0.5055,
-        "precision": 0.883,
+        "accuracy": 0.4583,
+        "balanced_accuracy": 0.6806,
+        "precision": 0.219,
         "recall": 1.0,
-        "f1": 0.9378,
-        "roc_auc": 0.9761
+        "f1": 0.3592,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 40.0,
-        "accuracy": 0.8851,
-        "balanced_accuracy": 0.5137,
-        "precision": 0.8847,
+        "accuracy": 0.5169,
+        "balanced_accuracy": 0.7152,
+        "precision": 0.2392,
         "recall": 1.0,
-        "f1": 0.9388,
-        "roc_auc": 0.9761
+        "f1": 0.386,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 42.5,
-        "accuracy": 0.8864,
-        "balanced_accuracy": 0.5192,
-        "precision": 0.8858,
+        "accuracy": 0.5764,
+        "balanced_accuracy": 0.7503,
+        "precision": 0.2639,
         "recall": 1.0,
-        "f1": 0.9395,
-        "roc_auc": 0.9761
+        "f1": 0.4176,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 45.0,
-        "accuracy": 0.8896,
-        "balanced_accuracy": 0.533,
-        "precision": 0.8887,
+        "accuracy": 0.6456,
+        "balanced_accuracy": 0.7911,
+        "precision": 0.3,
         "recall": 1.0,
-        "f1": 0.9411,
-        "roc_auc": 0.9761
+        "f1": 0.4615,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 47.5,
-        "accuracy": 0.8922,
-        "balanced_accuracy": 0.544,
-        "precision": 0.8911,
+        "accuracy": 0.7105,
+        "balanced_accuracy": 0.8293,
+        "precision": 0.3441,
         "recall": 1.0,
-        "f1": 0.9424,
-        "roc_auc": 0.9761
+        "f1": 0.512,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 50.0,
-        "accuracy": 0.8994,
-        "balanced_accuracy": 0.5742,
-        "precision": 0.8976,
+        "accuracy": 0.7584,
+        "balanced_accuracy": 0.8576,
+        "precision": 0.386,
         "recall": 1.0,
-        "f1": 0.946,
-        "roc_auc": 0.9761
+        "f1": 0.557,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 52.5,
-        "accuracy": 0.9045,
-        "balanced_accuracy": 0.5962,
-        "precision": 0.9023,
+        "accuracy": 0.8082,
+        "balanced_accuracy": 0.8869,
+        "precision": 0.4419,
         "recall": 1.0,
-        "f1": 0.9487,
-        "roc_auc": 0.9761
+        "f1": 0.6129,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 55.0,
-        "accuracy": 0.9078,
-        "balanced_accuracy": 0.6099,
-        "precision": 0.9053,
+        "accuracy": 0.841,
+        "balanced_accuracy": 0.9063,
+        "precision": 0.4886,
         "recall": 1.0,
-        "f1": 0.9503,
-        "roc_auc": 0.9761
+        "f1": 0.6564,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 57.5,
-        "accuracy": 0.9143,
-        "balanced_accuracy": 0.6374,
-        "precision": 0.9114,
+        "accuracy": 0.8792,
+        "balanced_accuracy": 0.9288,
+        "precision": 0.557,
         "recall": 1.0,
-        "f1": 0.9537,
-        "roc_auc": 0.9761
+        "f1": 0.7155,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 60.0,
-        "accuracy": 0.9227,
-        "balanced_accuracy": 0.6778,
-        "precision": 0.9206,
-        "recall": 0.9985,
-        "f1": 0.958,
-        "roc_auc": 0.9761
+        "accuracy": 0.9218,
+        "balanced_accuracy": 0.9539,
+        "precision": 0.6602,
+        "recall": 1.0,
+        "f1": 0.7953,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 62.5,
-        "accuracy": 0.9312,
-        "balanced_accuracy": 0.7159,
-        "precision": 0.9294,
-        "recall": 0.9978,
-        "f1": 0.9624,
-        "roc_auc": 0.9761
+        "accuracy": 0.9512,
+        "balanced_accuracy": 0.9712,
+        "precision": 0.7566,
+        "recall": 1.0,
+        "f1": 0.8615,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 65.0,
-        "accuracy": 0.939,
-        "balanced_accuracy": 0.756,
-        "precision": 0.9389,
-        "recall": 0.9956,
-        "f1": 0.9664,
-        "roc_auc": 0.9761
+        "accuracy": 0.9671,
+        "balanced_accuracy": 0.9782,
+        "precision": 0.8252,
+        "recall": 0.9942,
+        "f1": 0.9019,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 67.5,
-        "accuracy": 0.9409,
-        "balanced_accuracy": 0.7857,
-        "precision": 0.9464,
-        "recall": 0.989,
-        "f1": 0.9672,
-        "roc_auc": 0.9761
+        "accuracy": 0.9867,
+        "balanced_accuracy": 0.9897,
+        "precision": 0.9239,
+        "recall": 0.9942,
+        "f1": 0.9577,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 70.0,
-        "accuracy": 0.9455,
-        "balanced_accuracy": 0.8216,
-        "precision": 0.9557,
-        "recall": 0.9838,
-        "f1": 0.9695,
-        "roc_auc": 0.9761
+        "accuracy": 0.9929,
+        "balanced_accuracy": 0.9814,
+        "precision": 0.988,
+        "recall": 0.9649,
+        "f1": 0.9763,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 72.5,
-        "accuracy": 0.9442,
-        "balanced_accuracy": 0.8565,
-        "precision": 0.9656,
-        "recall": 0.9713,
-        "f1": 0.9684,
-        "roc_auc": 0.9761
+        "accuracy": 0.9867,
+        "balanced_accuracy": 0.9561,
+        "precision": 1.0,
+        "recall": 0.9123,
+        "f1": 0.9541,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 75.0,
-        "accuracy": 0.9435,
-        "balanced_accuracy": 0.8895,
-        "precision": 0.9753,
-        "recall": 0.9602,
-        "f1": 0.9677,
-        "roc_auc": 0.9761
+        "accuracy": 0.9769,
+        "balanced_accuracy": 0.924,
+        "precision": 1.0,
+        "recall": 0.848,
+        "f1": 0.9177,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 77.5,
-        "accuracy": 0.9383,
-        "balanced_accuracy": 0.9127,
-        "precision": 0.9832,
-        "recall": 0.9462,
-        "f1": 0.9644,
-        "roc_auc": 0.9761
+        "accuracy": 0.9663,
+        "balanced_accuracy": 0.8889,
+        "precision": 1.0,
+        "recall": 0.7778,
+        "f1": 0.875,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 80.0,
-        "accuracy": 0.9195,
-        "balanced_accuracy": 0.9163,
-        "precision": 0.9874,
-        "recall": 0.9205,
-        "f1": 0.9527,
-        "roc_auc": 0.9761
+        "accuracy": 0.9529,
+        "balanced_accuracy": 0.845,
+        "precision": 1.0,
+        "recall": 0.6901,
+        "f1": 0.8166,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 82.5,
-        "accuracy": 0.8994,
-        "balanced_accuracy": 0.9215,
-        "precision": 0.9926,
-        "recall": 0.8925,
-        "f1": 0.9399,
-        "roc_auc": 0.9761
+        "accuracy": 0.9387,
+        "balanced_accuracy": 0.7982,
+        "precision": 1.0,
+        "recall": 0.5965,
+        "f1": 0.7473,
+        "roc_auc": 0.9996
       },
       {
         "threshold": 85.0,
-        "accuracy": 0.8656,
-        "balanced_accuracy": 0.9071,
-        "precision": 0.994,
-        "recall": 0.8527,
-        "f1": 0.918,
-        "roc_auc": 0.9761
+        "accuracy": 0.9245,
+        "balanced_accuracy": 0.7515,
+        "precision": 1.0,
+        "recall": 0.5029,
+        "f1": 0.6693,
+        "roc_auc": 0.9996
       }
     ]
   }

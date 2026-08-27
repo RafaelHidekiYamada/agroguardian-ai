@@ -9,7 +9,7 @@ CACHE_TTL_SECONDS = 600
 
 
 def _cache_key(latitude: float, longitude: float) -> Tuple[float, float]:
-    return (round(latitude, 3), round(longitude, 3))
+    return (round(latitude, 5), round(longitude, 5))
 
 
 def _get_cached_weather(latitude: float, longitude: float) -> Dict | None:
@@ -40,6 +40,7 @@ def _fallback_weather(reason: str) -> Dict:
         "description": "Fallback por indisponibilidade do clima externo",
         "temperature": 22.5,
         "humidity": 70,
+        "pressure_hpa": 1013.25,
         "wind_speed": 4.0,
         "rain_mm_1h": 0.0,
         "error": reason,
@@ -77,6 +78,7 @@ def get_weather(latitude: float, longitude: float) -> Dict:
                 "description": data.get("weather", [{}])[0].get("description", "Sem descrição"),
                 "temperature": data.get("main", {}).get("temp", 22.5),
                 "humidity": data.get("main", {}).get("humidity", 70),
+                "pressure_hpa": data.get("main", {}).get("pressure", 1013.25),
                 "wind_speed": data.get("wind", {}).get("speed", 4.0),
                 "rain_mm_1h": data.get("rain", {}).get("1h", 0.0),
                 "error": None,

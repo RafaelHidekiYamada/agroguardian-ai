@@ -28,7 +28,8 @@ from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.inspection import permutation_importance
 from sklearn.tree import DecisionTreeRegressor
 
-from backend.risk_model import FEATURES, _synth_dataset
+from backend.risk_model import FEATURES
+from ml.training_data import load_training_data
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -167,7 +168,7 @@ def _candidate_models() -> Dict[str, Tuple[Any, Dict[str, List[Any]]]]:
 
 
 def train_decision_tree_models(n: int = 7000, seed: int = 42) -> Dict[str, Any]:
-    X, y = _synth_dataset(n=n, seed=seed)
+    X, y, training_metadata = load_training_data(prefer_real=True, n_synthetic=n, seed=seed)
     X_train, X_test, y_train, y_test = train_test_split(
         X[FEATURES],
         y,
@@ -239,12 +240,18 @@ def train_decision_tree_models(n: int = 7000, seed: int = 42) -> Dict[str, Any]:
     best_model_name = best_bundle["model_name"]
     output = {
         "training": {
-            "dataset": "synthetic_operational_risk",
-            "n_samples": n,
+            "dataset": training_metadata.get("dataset", "unknown"),
+            "source": training_metadata.get("source", "unknown"),
+            "path": training_metadata.get("path"),
+            "n_samples": int(len(X)),
             "n_train": int(len(X_train)),
             "n_test": int(len(X_test)),
             "high_risk_threshold": HIGH_RISK_THRESHOLD,
             "selection_rule": "menor RMSE, desempate por F1 e balanced accuracy",
+            "labeling_note": (
+                "Treino usa meteorologia historica real quando disponivel; "
+                "target de risco e heuristico-operacional ate haver sinistros reais."
+            ),
         },
         "tree_models": evaluations,
         "recommended_model": best_model_name,

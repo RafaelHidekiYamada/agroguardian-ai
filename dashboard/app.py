@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 from typing import Any
 
 import altair as alt
@@ -11,27 +12,61 @@ import pydeck as pdk
 
 st.set_page_config(page_title="AgroGuardian AI", layout="wide")
 
-API_HOSTPORT = os.getenv("API_HOSTPORT", "").strip()
-API_BASE_URL = os.getenv("API_BASE_URL", "").strip()
-if not API_BASE_URL and API_HOSTPORT:
-    API_BASE_URL = f"http://{API_HOSTPORT}"
-if not API_BASE_URL:
-    API_BASE_URL = "http://127.0.0.1:8000"
+def resolve_api_base_url() -> str:
+    api_hostport = os.getenv("API_HOSTPORT", "").strip()
+    configured_url = os.getenv("API_BASE_URL", "").strip()
+    public_hostname = os.getenv("API_PUBLIC_HOSTNAME", "").strip()
+    environment = os.getenv("ENVIRONMENT", "development").strip().lower()
+    if configured_url:
+        return configured_url.rstrip("/")
+    if public_hostname:
+        if public_hostname.startswith(("http://", "https://")):
+            return public_hostname.rstrip("/")
+        return f"https://{public_hostname}".rstrip("/")
+    if api_hostport:
+        return f"http://{api_hostport}".rstrip("/")
+
+    if environment not in {"development", "dev", "test", "testing"}:
+        return ""
+
+    for candidate in ("http://127.0.0.1:8000", "http://127.0.0.1:8001"):
+        try:
+            health = requests.get(f"{candidate}/health", timeout=1.5)
+            openapi = requests.get(f"{candidate}/openapi.json", timeout=1.5)
+            paths = openapi.json().get("paths", {}) if openapi.status_code == 200 else {}
+            if health.status_code == 200 and "/api/v1/auth/login" in paths:
+                return candidate
+        except requests.exceptions.RequestException:
+            continue
+    return "http://127.0.0.1:8000"
+
+
+API_BASE_URL = resolve_api_base_url()
 
 PREDICT_URL = f"{API_BASE_URL}/api/v1/risk/predict"
+ESP_TELEMETRY_URL = f"{API_BASE_URL}/api/v1/telemetry/esp"
 SIMULATE_URL = f"{API_BASE_URL}/api/v1/simulate"
 SUMMARY_URL = f"{API_BASE_URL}/api/v1/dashboard/summary"
 RANKING_URL = f"{API_BASE_URL}/api/v1/dashboard/ranking"
+REGION_RISK_URL = f"{API_BASE_URL}/api/v1/risk/regions"
+EQUIPMENT_RISK_URL = f"{API_BASE_URL}/api/v1/risk/equipment"
 TRENDS_URL = f"{API_BASE_URL}/api/v1/dashboard/trends"
 ALERTS_URL = f"{API_BASE_URL}/api/v1/dashboard/alerts"
 AUDIT_URL = f"{API_BASE_URL}/api/v1/dashboard/audit"
 EQUIPMENT_URL = f"{API_BASE_URL}/api/v1/equipment"
+EQUIPMENTS_URL = f"{API_BASE_URL}/api/v1/equipments"
 FARMS_URL = f"{API_BASE_URL}/api/v1/farms"
 POLICIES_URL = f"{API_BASE_URL}/api/v1/policies/alerts"
 ML_STATUS_URL = f"{API_BASE_URL}/api/v1/ml/status"
 ML_METRICS_URL = f"{API_BASE_URL}/api/v1/ml/metrics"
 AUTH_LOGIN_URL = f"{API_BASE_URL}/api/v1/auth/login"
 AUTH_ME_URL = f"{API_BASE_URL}/api/v1/auth/me"
+ADMIN_USERS_URL = f"{API_BASE_URL}/api/v1/admin/users"
+ADMIN_ROLES_URL = f"{API_BASE_URL}/api/v1/admin/roles"
+ADMIN_PERMISSIONS_URL = f"{API_BASE_URL}/api/v1/admin/permissions"
+ADMIN_EQUIPMENTS_URL = f"{API_BASE_URL}/api/v1/admin/equipments"
+IOT_DEVICES_URL = f"{API_BASE_URL}/api/v1/iot/devices"
+ADMIN_IOT_DEVICES_URL = f"{API_BASE_URL}/api/v1/admin/iot/devices"
 
 
 def apply_theme() -> None:
@@ -446,6 +481,7 @@ def init_auth_state() -> None:
         "auth_role": None,
         "auth_full_name": None,
         "auth_email": None,
+        "auth_permissions": [],
         "login_busy": False,
     }
     for key, value in defaults.items():
@@ -483,6 +519,9 @@ def login_user(username: str, password: str) -> tuple[bool, str]:
             if response.status_code == 429:
                 return False, "Servidor ocupado por alguns segundos. Aguarde e tente entrar novamente."
 
+        if response.status_code == 404:
+            return False, f"Endpoint de login nao encontrado em {API_BASE_URL}. Reinicie o dashboard ou ajuste API_BASE_URL para http://127.0.0.1:8001."
+
         if response.status_code != 200:
             try:
                 data = response.json()
@@ -500,13 +539,21 @@ def login_user(username: str, password: str) -> tuple[bool, str]:
         st.session_state["auth_role"] = login_data.get("role", "operador")
         st.session_state["auth_full_name"] = login_data.get("username", username)
         st.session_state["auth_email"] = None
+        st.session_state["auth_permissions"] = login_data.get("permissions", [])
+
+        ok_me, me_data = get_json(AUTH_ME_URL)
+        if ok_me and isinstance(me_data, dict):
+            st.session_state["auth_role"] = me_data.get("role", st.session_state["auth_role"])
+            st.session_state["auth_full_name"] = me_data.get("full_name", st.session_state["auth_full_name"])
+            st.session_state["auth_email"] = me_data.get("email")
+            st.session_state["auth_permissions"] = me_data.get("permissions", st.session_state["auth_permissions"])
 
         return True, "Login realizado com sucesso."
 
     except requests.exceptions.Timeout:
         return False, "A API demorou para responder. Aguarde alguns segundos e tente novamente."
-    except requests.exceptions.RequestException:
-        return False, "Conexao com a API instavel. Aguarde alguns segundos e tente novamente."
+    except requests.exceptions.RequestException as exc:
+        return False, f"Conexao com a API indisponivel em {API_BASE_URL}. Inicie o backend ou ajuste API_BASE_URL. Detalhe: {exc}"
 
 
 def logout_user() -> None:
@@ -515,6 +562,7 @@ def logout_user() -> None:
     st.session_state["auth_role"] = None
     st.session_state["auth_full_name"] = None
     st.session_state["auth_email"] = None
+    st.session_state["auth_permissions"] = []
     st.rerun()
 
 
@@ -536,12 +584,15 @@ def get_json(url: str) -> tuple[bool, Any]:
         return False, {"detail": str(e), "status_code": 500}
 
 
-def post_json(url: str, payload: dict) -> tuple[bool, Any]:
+def post_json(url: str, payload: dict, extra_headers: dict[str, str] | None = None) -> tuple[bool, Any]:
     try:
+        headers = get_auth_headers()
+        if extra_headers:
+            headers.update(extra_headers)
         response = requests.post(
             url,
             json=payload,
-            headers=get_auth_headers(),
+            headers=headers,
             timeout=30,
         )
         if response.status_code in (200, 201):
@@ -555,17 +606,35 @@ def post_json(url: str, payload: dict) -> tuple[bool, Any]:
         return False, {"detail": str(e), "status_code": 500}
 
 
-def put_json(url: str, payload: dict) -> tuple[bool, Any]:
+def put_json(url: str, payload: dict, extra_headers: dict[str, str] | None = None) -> tuple[bool, Any]:
     try:
+        headers = get_auth_headers()
+        if extra_headers:
+            headers.update(extra_headers)
         response = requests.put(
             url,
             json=payload,
-            headers=get_auth_headers(),
+            headers=headers,
             timeout=30,
         )
         if response.status_code == 200:
             return True, response.json()
 
+        try:
+            return False, response.json()
+        except Exception:
+            return False, {"detail": response.text, "status_code": response.status_code}
+    except requests.exceptions.RequestException as e:
+        return False, {"detail": str(e), "status_code": 500}
+
+
+def delete_json(url: str) -> tuple[bool, Any]:
+    try:
+        response = requests.delete(url, headers=get_auth_headers(), timeout=30)
+        if response.status_code in (200, 202, 204):
+            if response.text:
+                return True, response.json()
+            return True, {"status": "ok"}
         try:
             return False, response.json()
         except Exception:
@@ -652,6 +721,15 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def format_measurement(value: Any, unit: str, precision: int = 1) -> str:
+    if value is None:
+        return "N/D"
+    try:
+        return f"{float(value):.{precision}f} {unit}".strip()
+    except (TypeError, ValueError):
+        return "N/D"
+
+
 def safe_int(value: Any, default: int = 0) -> int:
     try:
         if value is None:
@@ -659,6 +737,15 @@ def safe_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return default
+
+
+def has_permission(permission: str) -> bool:
+    return permission in set(st.session_state.get("auth_permissions") or [])
+
+
+def has_any_permission(*permissions: str) -> bool:
+    user_permissions = set(st.session_state.get("auth_permissions") or [])
+    return any(permission in user_permissions for permission in permissions)
 
 
 def format_compact_number(value: Any) -> str:
@@ -782,13 +869,13 @@ def render_ranking_cards(ranking_data: Any, limit: int = 5) -> None:
         return
 
     for index, row in enumerate(rows[:limit], start=1):
-        score = safe_float(row.get("avg_risk_score"))
+        score = safe_float(row.get("risk_score", row.get("avg_risk_score")))
         width = max(6, min(100, score))
         st.markdown(
             f"""
             <div class="ag-ranking-row">
                 <div class="ag-ranking-title">{index}. {row.get("equipment_name", "-")}</div>
-                <div class="ag-ranking-meta">{row.get("equipment_type", "-")} | {row.get("latest_risk_label", "-")} | score {score:.1f}</div>
+                <div class="ag-ranking-meta">{row.get("equipment_type", "-")} | {row.get("risk_label", row.get("latest_risk_label", "-"))} | score {score:.1f}</div>
                 <div class="ag-progress"><div class="ag-progress-fill" style="width:{width}%"></div></div>
             </div>
             """,
@@ -819,6 +906,11 @@ def render_factor_cards(metrics_data: Any) -> None:
         "inclinacao": "Inclinacao",
         "historico_sinistros": "Historico",
         "distancia_agua": "Proximidade da agua",
+        "temperatura_c": "Temperatura",
+        "umidade_ar": "Umidade do ar",
+        "pressao_hpa": "Pressao",
+        "distancia_obstaculo": "Obstaculo",
+        "gps_accuracy_m": "Precisao GPS",
     }
 
     top = list(weights.items())[:5]
@@ -839,7 +931,10 @@ def render_factor_cards(metrics_data: Any) -> None:
 def render_overview_dashboard() -> None:
     ok_summary, summary_data = get_json(SUMMARY_URL)
     ok_trends, trends_data = get_json(TRENDS_URL)
-    ok_ranking, ranking_data = get_json(RANKING_URL)
+    ok_ranking, ranking_data = get_json(EQUIPMENT_RISK_URL)
+    if not ok_ranking:
+        ok_ranking, ranking_data = get_json(RANKING_URL)
+    ok_region_risk, region_risk_data = get_json(REGION_RISK_URL)
     ok_alerts, alerts_data = get_json(ALERTS_URL)
     ok_farms, farms_data = get_json(FARMS_URL)
     ok_metrics, metrics_data = get_json(ML_METRICS_URL)
@@ -934,8 +1029,9 @@ def render_overview_dashboard() -> None:
             farm_rows = farms_data if ok_farms and isinstance(farms_data, list) else []
             if farm_rows:
                 map_df = pd.DataFrame(farm_rows).rename(columns={"latitude": "lat", "longitude": "lon"})
-                risk_sequence = [72, 58, 45, 64, 38]
-                map_df["risk"] = [risk_sequence[i % len(risk_sequence)] for i in range(len(map_df))]
+                region_rows = region_risk_data if ok_region_risk and isinstance(region_risk_data, list) else []
+                risk_by_region = {row.get("region"): safe_float(row.get("risk_score")) for row in region_rows}
+                map_df["risk"] = map_df["region"].map(risk_by_region).fillna(45)
             else:
                 map_df = pd.DataFrame(
                     [
@@ -1079,6 +1175,7 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     st.write(f"Condição: **{weather.get('description', 'sem descrição')}**")
     st.write(f"Temperatura: **{weather.get('temperature', '-')} °C**")
     st.write(f"Umidade do ar: **{weather.get('humidity', '-')} %**")
+    st.write(f"Pressao: **{weather.get('pressure_hpa', '-')} hPa**")
     st.write(f"Vento: **{weather.get('wind_speed', '-')} m/s**")
     st.write(f"Chuva (1h): **{weather.get('rain_mm_1h', '-')} mm**")
 
@@ -1089,11 +1186,12 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
     st.subheader("Composição do score")
     risk_components = resultado.get("risk_components", {})
     if risk_components and isinstance(risk_components, dict):
-        rc1, rc2, rc3, rc4 = st.columns(4)
+        rc1, rc2, rc3, rc4, rc5 = st.columns(5)
         rc1.metric("Score do modelo", risk_components.get("model_risk_score", "-"))
         rc2.metric("Risco geográfico", risk_components.get("geo_risk_points", "-"))
-        rc3.metric("Score bruto", risk_components.get("uncapped_final_score", "-"))
-        rc4.metric("Score final", risk_components.get("final_risk_score", "-"))
+        rc3.metric("Risco sensores", risk_components.get("sensor_risk_points", "-"))
+        rc4.metric("Score bruto", risk_components.get("uncapped_final_score", "-"))
+        rc5.metric("Score final", risk_components.get("final_risk_score", "-"))
     else:
         st.info("Sem composição de score disponível.")
     executive_explanation = resultado.get("executive_explanation", {})
@@ -1141,6 +1239,9 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
 
         st.info(geo_risk.get("geo_reason", "Sem justificativa geográfica."))
         st.write(f"**Ponto de água mais próximo:** {nearest_water.get('nearest_name', '-')}")
+        precision = geo_context.get("precision", {})
+        if precision:
+            st.write(f"**Fonte geo:** {precision.get('water_source', '-')} | **Precisao GPS:** {precision.get('estimated_gps_accuracy_m', '-')} m")
     else:
         st.info("Sem contexto geográfico disponível.")
 
@@ -1216,6 +1317,21 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
             st.write(f"**{fator}:** {impacto}%")
     else:
         st.info("Sem fatores explicativos disponíveis.")
+
+    structured = resultado.get("explainable_ai", {})
+    if structured and isinstance(structured, dict):
+        st.subheader("Explicabilidade estruturada")
+        st.info(structured.get("summary", "Sem resumo estruturado."))
+        sx1, sx2, sx3 = st.columns(3)
+        sx1.metric("Confianca", structured.get("confidence_score", "-"))
+        sx2.metric("Telemetria", structured.get("telemetry_status", "-"))
+        sx3.metric("Qualidade", structured.get("data_quality_status", "-"))
+        factors = structured.get("factors", [])
+        if factors:
+            st.dataframe(any_to_dataframe(factors), use_container_width=True)
+        issues = structured.get("data_quality_issues") or []
+        if issues:
+            st.warning(" | ".join(str(item) for item in issues))
 
     st.subheader("Gráfico de fatores de risco")
     if explicacao and isinstance(explicacao, dict):
@@ -1331,21 +1447,31 @@ st.sidebar.markdown(
 
 render_topbar("Visao Geral", "Painel completo de gestao de riscos agricolas.")
 
-user_role = st.session_state.get("auth_role", "operador")
+user_role = str(st.session_state.get("auth_role", "OPERADOR")).upper()
 
 tab_labels = [
     "Visão Geral",
     "Operação em tempo real",
     "Resumo executivo",
     "Ranking",
+    "Risco regional",
     "Tendências",
 ]
 
-if user_role in ("admin", "sompo"):
+if has_permission("telemetry.view"):
+    tab_labels.append("Telemetria")
+
+if has_permission("equipments.view"):
+    tab_labels.append("Equipamentos")
+
+if has_any_permission("audit.view", "alerts.view"):
     tab_labels.append("Alertas e auditoria")
 
-if user_role in ("admin", "gestor"):
+if has_any_permission("alerts.manage", "settings.manage"):
     tab_labels.append("Políticas de alerta")
+
+if has_permission("users.view"):
+    tab_labels.append("Administracao")
 
 tab_labels.extend(
     [
@@ -1379,8 +1505,8 @@ with tab_map["Operação em tempo real"]:
     historico_sinistros = st.sidebar.slider("Histórico de sinistros", 0, 20, 2)
     solo_instavel = st.sidebar.selectbox("Solo instável", [0, 1])
 
-    latitude = st.sidebar.number_input("Latitude", value=-23.455000, format="%.6f")
-    longitude = st.sidebar.number_input("Longitude", value=-46.533000, format="%.6f")
+    latitude = st.sidebar.number_input("Latitude", value=-23.4550000, step=0.000001, format="%.7f")
+    longitude = st.sidebar.number_input("Longitude", value=-46.5330000, step=0.000001, format="%.7f")
 
     clima_base = st.sidebar.selectbox("Clima base", ["sol", "nublado", "chuva"], index=0)
     chuva_mm_base = st.sidebar.slider("Chuva base (mm)", 0, 100, 0)
@@ -1419,6 +1545,58 @@ with tab_map["Operação em tempo real"]:
             render_prediction_result(resultado, latitude, longitude)
         else:
             show_api_error("Erro na API de predição", resultado)
+
+    st.markdown("### Telemetria ESP32")
+    with st.expander("Enviar leitura fisica de teste", expanded=False):
+        esp_col1, esp_col2, esp_col3 = st.columns(3)
+        with esp_col1:
+            esp_device_id = st.text_input("Device ID", value="ESP32-TRATOR-001", key="esp_device_id")
+            esp_api_key = st.text_input("API Key do dispositivo", type="password", key="esp_api_key")
+            esp_temperature = st.number_input("BME280 temperatura C", value=28.5, step=0.1, key="esp_temperature")
+            esp_humidity = st.number_input("BME280 umidade %", min_value=0.0, max_value=100.0, value=78.0, step=0.5, key="esp_humidity")
+            esp_pressure = st.number_input("BME280 pressao hPa", min_value=300.0, max_value=1100.0, value=1010.0, step=0.5, key="esp_pressure")
+        with esp_col2:
+            esp_accel_x = st.number_input("MPU accel X", value=0.12, step=0.01, key="esp_accel_x")
+            esp_accel_y = st.number_input("MPU accel Y", value=-0.08, step=0.01, key="esp_accel_y")
+            esp_accel_z = st.number_input("MPU accel Z", value=9.74, step=0.01, key="esp_accel_z")
+            esp_inclination = st.number_input("MPU inclinacao graus", min_value=0.0, max_value=180.0, value=float(inclinacao), step=0.1, key="esp_inclination")
+        with esp_col3:
+            esp_distance = st.number_input("JSN-SR04T distancia cm", min_value=0.0, value=185.0, step=1.0, key="esp_distance")
+            esp_send = st.button("Enviar leitura ESP32", key="btn_send_esp")
+
+        if esp_send:
+            sequence = int(st.session_state.get("esp_sequence_number", int(time.time())))
+            st.session_state["esp_sequence_number"] = sequence + 1
+            esp_payload = {
+                "device_id": esp_device_id,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "sequence_number": sequence,
+                "operation_type": operation_type,
+                "firmware_version": "dashboard-physical-test",
+                "bme280": {
+                    "temperature_c": float(esp_temperature),
+                    "humidity_pct": float(esp_humidity),
+                    "pressure_hpa": float(esp_pressure),
+                },
+                "mpu6050": {
+                    "accel_x": float(esp_accel_x),
+                    "accel_y": float(esp_accel_y),
+                    "accel_z": float(esp_accel_z),
+                    "inclination_deg": float(esp_inclination),
+                },
+                "jsn_sr04t": {"distance_cm": float(esp_distance)},
+            }
+
+            ok_esp, esp_result = post_json(
+                ESP_TELEMETRY_URL,
+                esp_payload,
+                extra_headers={"X-Device-ID": esp_device_id, "X-API-Key": esp_api_key},
+            )
+            if ok_esp:
+                st.success("Leitura ESP32 recebida e analisada.")
+                st.json(esp_result)
+            else:
+                show_api_error("Erro ao enviar leitura ESP32", esp_result)
 
 with tab_map["Resumo executivo"]:
     st.markdown("### Resumo executivo Sompo")
@@ -1465,7 +1643,9 @@ with tab_map["Resumo executivo"]:
 with tab_map["Ranking"]:
     st.markdown("### Ranking de equipamentos")
 
-    ok_ranking, ranking_data = get_json(RANKING_URL)
+    ok_ranking, ranking_data = get_json(EQUIPMENT_RISK_URL)
+    if not ok_ranking:
+        ok_ranking, ranking_data = get_json(RANKING_URL)
 
     if ok_ranking:
         df_ranking = any_to_dataframe(ranking_data)
@@ -1477,7 +1657,7 @@ with tab_map["Ranking"]:
             object_cols = df_ranking.select_dtypes(include=["object"]).columns.tolist()
 
             if numeric_cols and object_cols:
-                score_col = numeric_cols[0]
+                score_col = "risk_score" if "risk_score" in df_ranking.columns else "avg_risk_score" if "avg_risk_score" in df_ranking.columns else numeric_cols[0]
                 label_col = next((c for c in object_cols if "name" in c.lower()), object_cols[0])
 
                 chart_df = df_ranking[[label_col, score_col]].copy()
@@ -1492,6 +1672,54 @@ with tab_map["Ranking"]:
             st.info("Nenhum dado de ranking retornado.")
     else:
         show_api_error("Erro ao carregar ranking", ranking_data)
+
+with tab_map["Risco regional"]:
+    st.markdown("### Score de risco por regiao")
+
+    ok_regions, region_data = get_json(REGION_RISK_URL)
+
+    if ok_regions:
+        df_regions = any_to_dataframe(region_data)
+        if not df_regions.empty:
+            st.dataframe(df_regions, use_container_width=True)
+
+            if {"region", "risk_score"}.issubset(df_regions.columns):
+                chart_df = df_regions[["region", "risk_score"]].copy()
+                chart_df.columns = ["Regiao", "Score"]
+                st.markdown("#### Ranking regional")
+                st.bar_chart(chart_df.set_index("Regiao"))
+
+            if {"latitude", "longitude", "risk_score"}.issubset(df_regions.columns):
+                map_df = df_regions.dropna(subset=["latitude", "longitude"]).copy()
+                if not map_df.empty:
+                    map_df["lat"] = map_df["latitude"].astype(float)
+                    map_df["lon"] = map_df["longitude"].astype(float)
+                    map_df["risk"] = map_df["risk_score"].astype(float)
+                    map_df["color"] = map_df["risk"].apply(
+                        lambda score: [255, 77, 77, 190] if score >= 70 else [255, 209, 102, 190] if score >= 41 else [49, 233, 129, 190]
+                    )
+                    view_state = pdk.ViewState(
+                        latitude=float(map_df["lat"].mean()),
+                        longitude=float(map_df["lon"].mean()),
+                        zoom=6,
+                        pitch=0,
+                    )
+                    layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=map_df,
+                        get_position="[lon, lat]",
+                        get_fill_color="color",
+                        get_radius=18000,
+                        pickable=True,
+                    )
+                    st.pydeck_chart(
+                        pdk.Deck(initial_view_state=view_state, layers=[layer], tooltip={"text": "{region}\\nScore: {risk}"}),
+                        use_container_width=True,
+                    )
+        else:
+            st.info("Nenhum dado regional retornado.")
+    else:
+        show_api_error("Erro ao carregar risco regional", region_data)
 
 with tab_map["Tendências"]:
     st.markdown("### Tendências de risco")
@@ -1514,6 +1742,258 @@ with tab_map["Tendências"]:
             st.info("Nenhum dado de tendência retornado.")
     else:
         show_api_error("Erro ao carregar tendências", trends_data)
+
+if "Telemetria" in tab_map:
+    with tab_map["Telemetria"]:
+        st.markdown("### Central de Telemetria")
+
+        ok_equipment, equipment_rows = get_json(EQUIPMENTS_URL)
+        equipment_df = any_to_dataframe(equipment_rows if ok_equipment else [])
+        if equipment_df.empty:
+            st.info("Nenhum equipamento disponivel para telemetria.")
+        else:
+            labels = [
+                f"{int(row['equipment_id'])} - {row.get('equipment_name', row.get('name', 'Equipamento'))}"
+                for _, row in equipment_df.iterrows()
+            ]
+            selected_label = st.selectbox("Equipamento", labels, key="telemetry_equipment_select")
+            selected_equipment_id = int(selected_label.split(" - ")[0])
+
+            period_label = st.selectbox(
+                "Periodo",
+                ["Ultimos 5 minutos", "Ultima hora", "Ultimas 6 horas", "24 horas", "7 dias", "30 dias"],
+                index=1,
+                key="telemetry_period",
+            )
+            period_map = {
+                "Ultimos 5 minutos": "5m",
+                "Ultima hora": "1h",
+                "Ultimas 6 horas": "6h",
+                "24 horas": "24h",
+                "7 dias": "7d",
+                "30 dias": "30d",
+            }
+            refresh_cols = st.columns([1, 1, 4])
+            auto_refresh = refresh_cols[0].checkbox("Auto", value=False, key="telemetry_auto")
+            refresh_seconds = refresh_cols[1].number_input("Segundos", min_value=2, max_value=60, value=5, step=1)
+
+            ok_latest, latest_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/telemetry/latest")
+            ok_risk, risk_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/risk/current")
+            ok_history, history_data = get_json(
+                f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/telemetry/history?period={period_map[period_label]}"
+            )
+            ok_events, events_data = get_json(
+                f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/iot-events?period={period_map[period_label]}"
+            )
+
+            latest = latest_data.get("telemetry") if ok_latest and isinstance(latest_data, dict) else None
+            if latest:
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("ESP32", latest.get("device_id", "-"))
+                m2.metric("Status", latest_data.get("device_status", latest.get("telemetry_status", "-")))
+                m3.metric("Idade", format_measurement(latest.get("telemetry_age_seconds"), "s", 0))
+                m4.metric("Risk Score", latest.get("risk_score", "-"))
+                m5.metric("Risco", latest.get("risk_level", "-"))
+
+                b1, b2, b3 = st.columns(3)
+                b1.metric("BME temperatura", format_measurement(latest.get("temperature_c"), "C"))
+                b2.metric("BME umidade", format_measurement(latest.get("humidity_pct"), "%"))
+                b3.metric("BME pressao", format_measurement(latest.get("pressure_hpa"), "hPa"))
+
+                p1, p2, p3 = st.columns(3)
+                p1.metric("MPU accel X", format_measurement(latest.get("accel_x"), "m/s2", 2))
+                p2.metric("MPU accel Y", format_measurement(latest.get("accel_y"), "m/s2", 2))
+                p3.metric("MPU accel Z", format_measurement(latest.get("accel_z"), "m/s2", 2))
+
+                q1, q2, q3 = st.columns(3)
+                q1.metric("MPU magnitude", format_measurement(latest.get("acceleration_magnitude"), "m/s2", 2))
+                q2.metric(
+                    "MPU pitch / roll",
+                    f"{format_measurement(latest.get('pitch'), 'deg')} / {format_measurement(latest.get('roll'), 'deg')}",
+                )
+                q3.metric("MPU inclinacao", format_measurement(latest.get("inclination_deg"), "deg"))
+
+                s1, s2, s3 = st.columns(3)
+                s1.metric("MPU movimento", format_measurement(latest.get("movement_anomaly_score"), "score"))
+                s2.metric("MPU impacto", "SIM" if latest.get("possible_impact") else "NAO")
+                s3.metric("JSN distancia", format_measurement(latest.get("distance_cm"), "cm"))
+
+                o1, o2, o3 = st.columns(3)
+                o1.metric("Qualidade", latest.get("data_quality_status", "-"))
+                o2.metric("Confianca", format_measurement(latest.get("confidence_score"), "%"))
+                obstacle_status = "Detectado" if latest.get("obstacle_detected") else "Sem alerta"
+                if latest.get("distance_cm") is None:
+                    obstacle_status = "N/D"
+                o3.metric("JSN obstaculo", obstacle_status)
+
+                issues = latest.get("data_quality_issues") or []
+                if issues:
+                    st.caption("Qualidade: " + " | ".join(str(issue) for issue in issues))
+                st.caption(
+                    f"Recebido: {str(latest.get('received_at', '-'))[:19]} | "
+                    f"Origem: {'ESP32 fisico' if latest.get('iot_device_id') else 'legado'}"
+                )
+
+                explanation = latest.get("explanation") or {}
+                if explanation:
+                    st.markdown("#### Explicacao da IA")
+                    st.info(explanation.get("summary", "Sem resumo."))
+                    if explanation.get("recommendation"):
+                        st.caption(f"Recomendacao: {explanation['recommendation']}")
+                    factors = explanation.get("factors", [])
+                    if factors:
+                        st.dataframe(any_to_dataframe(factors), use_container_width=True)
+            else:
+                st.info("Ainda nao ha telemetria IoT para este equipamento.")
+
+            if ok_history and isinstance(history_data, dict):
+                hist_df = any_to_dataframe(history_data.get("history", []))
+                st.markdown("#### Historico")
+                if not hist_df.empty:
+                    st.dataframe(hist_df, use_container_width=True)
+                    time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
+                    bme_cols = [col for col in ["temperature_c", "humidity_pct", "pressure_hpa"] if col in hist_df.columns]
+                    motion_cols = [
+                        col
+                        for col in [
+                            "distance_cm",
+                            "accel_x",
+                            "accel_y",
+                            "accel_z",
+                            "acceleration_magnitude",
+                            "inclination_deg",
+                            "movement_anomaly_score",
+                            "risk_score",
+                        ]
+                        if col in hist_df.columns
+                    ]
+                    if time_col in hist_df.columns and bme_cols:
+                        st.caption("BME280 no periodo")
+                        st.line_chart(hist_df[[time_col, *bme_cols]].set_index(time_col)[bme_cols])
+                    if time_col in hist_df.columns and motion_cols:
+                        st.caption("JSN-SR04T, MPU-6050 e risco no periodo")
+                        st.line_chart(hist_df[[time_col, *motion_cols]].set_index(time_col)[motion_cols])
+                else:
+                    st.info("Sem historico no periodo selecionado.")
+            else:
+                show_api_error("Erro ao carregar historico de telemetria", history_data)
+
+            if ok_events and isinstance(events_data, dict):
+                events = events_data.get("events", [])
+                if events:
+                    st.markdown("#### Eventos IoT")
+                    st.dataframe(any_to_dataframe(events), use_container_width=True)
+
+            if auto_refresh:
+                time.sleep(int(refresh_seconds))
+                st.rerun()
+
+if "Equipamentos" in tab_map:
+    with tab_map["Equipamentos"]:
+        st.markdown("### Equipamentos e Dispositivos IoT")
+
+        ok_equipment, equipment_rows = get_json(EQUIPMENTS_URL)
+        if ok_equipment:
+            equipment_df = any_to_dataframe(equipment_rows)
+            st.markdown("#### Equipamentos")
+            st.dataframe(equipment_df, use_container_width=True)
+        else:
+            show_api_error("Erro ao carregar equipamentos", equipment_rows)
+            equipment_df = pd.DataFrame()
+
+        ok_devices, device_rows = get_json(IOT_DEVICES_URL)
+        st.markdown("#### Dispositivos IoT")
+        if ok_devices:
+            devices_df = any_to_dataframe(device_rows)
+            st.dataframe(devices_df, use_container_width=True)
+        else:
+            show_api_error("Erro ao carregar dispositivos", device_rows)
+            devices_df = pd.DataFrame()
+
+        if has_permission("equipments.create"):
+            with st.expander("Cadastrar equipamento", expanded=False):
+                with st.form("create_equipment_form"):
+                    eq_name = st.text_input("Nome", value="Trator 01")
+                    eq_type = st.text_input("Tipo", value="Trator")
+                    eq_client = st.text_input("Cliente", value="Cliente Demo")
+                    eq_farm = st.number_input("Farm ID", min_value=1, value=1, step=1)
+                    eq_model = st.text_input("Modelo", value="John Deere 6110J")
+                    eq_year = st.number_input("Ano", min_value=1900, max_value=2100, value=2024, step=1)
+                    eq_status = st.selectbox("Status", ["active", "inactive", "maintenance"], key="eq_status")
+                    submit_eq = st.form_submit_button("Salvar equipamento")
+                if submit_eq:
+                    payload = {
+                        "name": eq_name,
+                        "equipment_type": eq_type,
+                        "client_name": eq_client,
+                        "farm_id": int(eq_farm),
+                        "model": eq_model,
+                        "year": int(eq_year),
+                        "status": eq_status,
+                    }
+                    ok_create, create_result = post_json(ADMIN_EQUIPMENTS_URL, payload)
+                    if ok_create:
+                        st.success("Equipamento criado.")
+                        st.json(create_result)
+                    else:
+                        show_api_error("Erro ao criar equipamento", create_result)
+
+        if has_permission("iot.devices.manage"):
+            with st.expander("Cadastrar ESP32", expanded=False):
+                equipment_options = []
+                if not equipment_df.empty:
+                    equipment_options = [
+                        f"{int(row['equipment_id'])} - {row.get('equipment_name', row.get('name', 'Equipamento'))}"
+                        for _, row in equipment_df.iterrows()
+                    ]
+                with st.form("create_device_form"):
+                    dev_id = st.text_input("Device identifier", value="ESP32-TRATOR-001")
+                    dev_name = st.text_input("Nome do dispositivo", value="ESP32 Trator 01")
+                    dev_equipment_label = st.selectbox("Equipamento vinculado", equipment_options or ["1 - Equipamento 1"])
+                    dev_firmware = st.text_input("Firmware", value="1.0.0")
+                    dev_status = st.selectbox("Status inicial", ["offline", "online", "maintenance", "disabled"], key="dev_status")
+                    submit_dev = st.form_submit_button("Gerar credencial")
+                if submit_dev:
+                    payload = {
+                        "device_identifier": dev_id,
+                        "equipment_id": int(dev_equipment_label.split(" - ")[0]),
+                        "name": dev_name,
+                        "device_type": "ESP32",
+                        "firmware_version": dev_firmware,
+                        "status": dev_status,
+                    }
+                    ok_dev, dev_result = post_json(ADMIN_IOT_DEVICES_URL, payload)
+                    if ok_dev:
+                        st.success("ESP32 cadastrado. A API key aparece apenas agora.")
+                        st.json(dev_result)
+                    else:
+                        show_api_error("Erro ao cadastrar ESP32", dev_result)
+
+            if ok_devices and not devices_df.empty:
+                with st.expander("Atualizar ou desativar ESP32", expanded=False):
+                    device_options = devices_df["device_id"].astype(str).tolist()
+                    selected_device = st.selectbox("Device ID", device_options, key="manage_device_select")
+                    new_status = st.selectbox("Novo status", ["online", "offline", "maintenance", "disabled"], key="manage_device_status")
+                    rotate_key = st.checkbox("Rotacionar API key", value=False)
+                    revoke_key = st.checkbox("Revogar API key atual", value=False)
+                    col_update, col_disable = st.columns(2)
+                    if col_update.button("Atualizar dispositivo"):
+                        ok_update, update_result = put_json(
+                            f"{ADMIN_IOT_DEVICES_URL}/{selected_device}",
+                            {"status": new_status, "rotate_api_key": rotate_key, "revoke_api_key": revoke_key},
+                        )
+                        if ok_update:
+                            st.success("Dispositivo atualizado.")
+                            st.json(update_result)
+                        else:
+                            show_api_error("Erro ao atualizar dispositivo", update_result)
+                    if col_disable.button("Desativar dispositivo"):
+                        ok_delete, delete_result = delete_json(f"{ADMIN_IOT_DEVICES_URL}/{selected_device}")
+                        if ok_delete:
+                            st.success("Dispositivo desativado.")
+                            st.json(delete_result)
+                        else:
+                            show_api_error("Erro ao desativar dispositivo", delete_result)
 
 if "Alertas e auditoria" in tab_map:
     with tab_map["Alertas e auditoria"]:
@@ -1656,6 +2136,148 @@ if "Políticas de alerta" in tab_map:
                 else:
                     show_api_error("Erro ao atualizar política", update_data)
 
+if "Administracao" in tab_map:
+    with tab_map["Administracao"]:
+        st.markdown("### Administracao de usuarios")
+
+        ok_roles, roles_data = get_json(ADMIN_ROLES_URL)
+        ok_permissions, permissions_data = get_json(ADMIN_PERMISSIONS_URL)
+        role_options = [row.get("name") for row in roles_data] if ok_roles and isinstance(roles_data, list) else []
+        permission_options = [row.get("code") for row in permissions_data] if ok_permissions and isinstance(permissions_data, list) else []
+
+        filter_cols = st.columns(4)
+        user_q = filter_cols[0].text_input("Busca", key="admin_user_q")
+        user_role_filter = filter_cols[1].selectbox("Role", [""] + role_options, key="admin_role_filter")
+        user_status_filter = filter_cols[2].selectbox("Status", ["", "active", "inactive", "deleted"], key="admin_status_filter")
+        refresh_users = filter_cols[3].button("Atualizar usuarios")
+
+        query_params = []
+        if user_q:
+            query_params.append(f"q={user_q}")
+        if user_role_filter:
+            query_params.append(f"role={user_role_filter}")
+        if user_status_filter:
+            query_params.append(f"status={user_status_filter}")
+        users_url = ADMIN_USERS_URL + (("?" + "&".join(query_params)) if query_params else "")
+        ok_users, users_data = get_json(users_url)
+
+        if ok_users:
+            users_df = any_to_dataframe(users_data)
+            st.dataframe(users_df, use_container_width=True)
+        else:
+            show_api_error("Erro ao carregar usuarios", users_data)
+            users_df = pd.DataFrame()
+
+        with st.expander("Novo usuario", expanded=False):
+            with st.form("admin_create_user_form"):
+                c1, c2, c3 = st.columns(3)
+                new_name = c1.text_input("Nome", value="Novo Usuario")
+                new_username = c2.text_input("Login", value="novo.usuario")
+                new_email = c3.text_input("Email", value="novo.usuario@agroguardian.ai")
+                new_password = st.text_input("Senha inicial", type="password")
+                new_roles = st.multiselect("Roles", role_options, default=["LEITURA"] if "LEITURA" in role_options else role_options[:1])
+                add_permissions = st.multiselect("Permissoes adicionais", permission_options, key="new_permissions_add")
+                remove_permissions = st.multiselect("Permissoes removidas", permission_options, key="new_permissions_remove")
+                scope_cols = st.columns(3)
+                scope_client = scope_cols[0].text_input("Cliente autorizado", value="")
+                scope_farm = scope_cols[1].number_input("Farm ID autorizado", min_value=0, value=0, step=1)
+                scope_equipment = scope_cols[2].number_input("Equipment ID autorizado", min_value=0, value=0, step=1)
+                create_user_submit = st.form_submit_button("Criar usuario")
+            if create_user_submit:
+                scopes = []
+                if scope_client or scope_farm or scope_equipment:
+                    scopes.append(
+                        {
+                            "client_name": scope_client or None,
+                            "farm_id": int(scope_farm) or None,
+                            "equipment_id": int(scope_equipment) or None,
+                        }
+                    )
+                payload = {
+                    "name": new_name,
+                    "username": new_username,
+                    "email": new_email,
+                    "password": new_password,
+                    "roles": new_roles,
+                    "permissions_add": add_permissions,
+                    "permissions_remove": remove_permissions,
+                    "access_scopes": scopes,
+                    "is_active": True,
+                    "status": "active",
+                }
+                ok_create, create_result = post_json(ADMIN_USERS_URL, payload)
+                if ok_create:
+                    st.success("Usuario criado.")
+                    st.json(create_result)
+                else:
+                    show_api_error("Erro ao criar usuario", create_result)
+
+        if ok_users and not users_df.empty:
+            with st.expander("Editar usuario", expanded=False):
+                user_options = [
+                    f"{int(row['id'])} - {row.get('username', '-')}"
+                    for _, row in users_df.iterrows()
+                    if "id" in row
+                ]
+                selected_user_label = st.selectbox("Usuario", user_options, key="admin_edit_user_select")
+                selected_user_id = int(selected_user_label.split(" - ")[0])
+                selected_row = users_df[users_df["id"] == selected_user_id].iloc[0].to_dict()
+                current_roles = selected_row.get("roles") if isinstance(selected_row.get("roles"), list) else []
+                current_permissions = selected_row.get("explicit_permissions_add") if isinstance(selected_row.get("explicit_permissions_add"), list) else []
+                current_removed = selected_row.get("explicit_permissions_remove") if isinstance(selected_row.get("explicit_permissions_remove"), list) else []
+
+                with st.form("admin_edit_user_form"):
+                    e1, e2, e3 = st.columns(3)
+                    edit_name = e1.text_input("Nome", value=str(selected_row.get("name", "")))
+                    edit_username = e2.text_input("Login", value=str(selected_row.get("username", "")))
+                    edit_email = e3.text_input("Email", value=str(selected_row.get("email", "")))
+                    edit_roles = st.multiselect("Roles", role_options, default=current_roles)
+                    edit_add_permissions = st.multiselect("Permissoes adicionadas", permission_options, default=current_permissions, key="edit_permissions_add")
+                    edit_remove_permissions = st.multiselect("Permissoes removidas", permission_options, default=current_removed, key="edit_permissions_remove")
+                    edit_active = st.checkbox("Ativo", value=bool(selected_row.get("is_active", True)))
+                    edit_status = st.selectbox("Status", ["active", "inactive", "deleted"], index=0, key="edit_user_status")
+                    edit_password = st.text_input("Nova senha opcional", type="password", key="edit_password_optional")
+                    update_user_submit = st.form_submit_button("Salvar alteracoes")
+                if update_user_submit:
+                    payload = {
+                        "name": edit_name,
+                        "username": edit_username,
+                        "email": edit_email,
+                        "roles": edit_roles,
+                        "permissions_add": edit_add_permissions,
+                        "permissions_remove": edit_remove_permissions,
+                        "is_active": edit_active,
+                        "status": edit_status,
+                    }
+                    if edit_password:
+                        payload["password"] = edit_password
+                    ok_update, update_result = put_json(f"{ADMIN_USERS_URL}/{selected_user_id}", payload)
+                    if ok_update:
+                        st.success("Usuario atualizado.")
+                        st.json(update_result)
+                    else:
+                        show_api_error("Erro ao atualizar usuario", update_result)
+
+                action_cols = st.columns(2)
+                reset_password = action_cols[0].text_input("Resetar senha para", type="password", key="reset_user_password")
+                if action_cols[0].button("Resetar senha"):
+                    ok_reset, reset_result = post_json(
+                        f"{ADMIN_USERS_URL}/{selected_user_id}/reset-password",
+                        {"new_password": reset_password},
+                    )
+                    if ok_reset:
+                        st.success("Senha resetada.")
+                    else:
+                        show_api_error("Erro ao resetar senha", reset_result)
+
+                if action_cols[1].button("Desativar/excluir usuario"):
+                    ok_delete, delete_result = delete_json(f"{ADMIN_USERS_URL}/{selected_user_id}")
+                    if ok_delete:
+                        st.success("Usuario desativado.")
+                        st.json(delete_result)
+                    else:
+                        show_api_error("Erro ao desativar usuario", delete_result)
+
 with tab_map["Simulador de risco"]:
     st.markdown("### Simulador de risco")
     st.caption("Compare um cenário base com um cenário simulado para tomada de decisão preventiva.")
@@ -1682,8 +2304,8 @@ with tab_map["Simulador de risco"]:
         sim_historico = st.slider("Histórico de sinistros", 0, 20, 2, key="sim_historico")
         sim_chuva_mm = st.slider("Chuva base (mm)", 0, 100, 0, key="sim_chuva_mm")
         sim_solo_instavel = st.selectbox("Solo instável", [0, 1], key="sim_solo_instavel")
-        sim_latitude = st.number_input("Latitude", value=-23.455000, format="%.6f", key="sim_latitude")
-        sim_longitude = st.number_input("Longitude", value=-46.533000, format="%.6f", key="sim_longitude")
+        sim_latitude = st.number_input("Latitude", value=-23.4550000, step=0.000001, format="%.7f", key="sim_latitude")
+        sim_longitude = st.number_input("Longitude", value=-46.5330000, step=0.000001, format="%.7f", key="sim_longitude")
 
     with sim_col2:
         st.markdown("#### Cenário simulado")
@@ -1707,13 +2329,15 @@ with tab_map["Simulador de risco"]:
             sim2_latitude = st.number_input(
                 "Latitude simulada",
                 value=float(sim_latitude),
-                format="%.6f",
+                step=0.000001,
+                format="%.7f",
                 key="sim2_latitude",
             )
             sim2_longitude = st.number_input(
                 "Longitude simulada",
                 value=float(sim_longitude),
-                format="%.6f",
+                step=0.000001,
+                format="%.7f",
                 key="sim2_longitude",
             )
 

@@ -20,7 +20,8 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 
-from backend.risk_model import FEATURES, _synth_dataset, train_or_load_model
+from backend.risk_model import FEATURES, train_or_load_model
+from ml.training_data import load_training_data
 from ml.train_decision_trees import (
     BEST_MODEL_PATH,
     HIGH_RISK_THRESHOLD,
@@ -54,7 +55,12 @@ def _classification_metrics(y_test: pd.Series, preds: np.ndarray, threshold: flo
 
 def evaluate_bundle(bundle: dict, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
     model = bundle["model"]
-    preds = np.clip(model.predict(X_test[FEATURES]), 0, 100)
+    feature_names = bundle.get("feature_names") or FEATURES
+    model_input = X_test.copy()
+    for feature in feature_names:
+        if feature not in model_input.columns:
+            model_input[feature] = 0.0
+    preds = np.clip(model.predict(model_input[feature_names]), 0, 100)
     return {
         "model_name": bundle.get("model_name", "unknown"),
         "runtime_source": bundle.get("runtime_source", "evaluation"),
@@ -71,7 +77,7 @@ def evaluate_bundle(bundle: dict, X_test: pd.DataFrame, y_test: pd.Series) -> Di
 
 
 def main() -> None:
-    X, y = _synth_dataset(n=4500, seed=123)
+    X, y, training_metadata = load_training_data(prefer_real=True, n_synthetic=4500, seed=123)
     _, X_test, _, y_test = train_test_split(
         X,
         y,
@@ -125,6 +131,7 @@ def main() -> None:
     )
 
     output = {
+        "training": training_metadata,
         "baseline": base_metrics,
         "neural_network": nn_metrics,
         "tree_search": tree_search_report,

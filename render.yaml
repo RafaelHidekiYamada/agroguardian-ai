@@ -5,17 +5,29 @@ services:
     plan: free
     branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k uvicorn.workers.UvicornWorker -w 1 -b 0.0.0.0:$PORT backend.main:app
+    startCommand: alembic upgrade head && gunicorn -k uvicorn.workers.UvicornWorker -w 1 -b 0.0.0.0:$PORT backend.main:app
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
       - key: MODEL_VERSION
         value: 1.0.0
+      - key: ENVIRONMENT
+        value: production
+      - key: IOT_AUTH_ENABLED
+        value: "true"
       - key: JWT_SECRET_KEY
         generateValue: true
+      - key: INITIAL_ADMIN_USERNAME
+        sync: false
+      - key: INITIAL_ADMIN_EMAIL
+        sync: false
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false
       - key: DATABASE_URL
-        value: sqlite:///./agroguardian.db
+        fromDatabase:
+          name: agroguardian-db
+          property: connectionString
 
   - type: web
     name: agroguardian-dashboard
@@ -27,8 +39,23 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
+      - key: ENVIRONMENT
+        value: production
+      - key: API_BASE_URL
+        sync: false
       - key: API_HOSTPORT
         fromService:
           type: web
           name: agroguardian-api
           property: hostport
+      - key: API_PUBLIC_HOSTNAME
+        fromService:
+          type: web
+          name: agroguardian-api
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+
+databases:
+  - name: agroguardian-db
+    plan: free
+    databaseName: agroguardian
+    user: agroguardian

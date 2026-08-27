@@ -6,6 +6,6 @@ from .models import AuditLog
 def write_audit(db: Session, actor: str, action: str, payload: Dict[str, Any]) -> int:
     record = AuditLog(actor=actor, action=action, payload=payload)
     db.add(record)
-    db.commit()
-    db.refresh(record)
+    # Let the caller commit the audit entry with the business operation.
+    db.flush()
     return record.id

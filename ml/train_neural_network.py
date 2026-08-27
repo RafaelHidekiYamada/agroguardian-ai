@@ -11,7 +11,8 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from backend.risk_model import FEATURES, _synth_dataset
+from backend.risk_model import FEATURES
+from ml.training_data import load_training_data as load_tabular_training_data
 
 BASE_DIR = Path(__file__).resolve().parent
 ARTIFACTS_DIR = BASE_DIR / "saved_models"
@@ -20,14 +21,12 @@ MODEL_PATH = ARTIFACTS_DIR / "mlp_regressor.joblib"
 METRICS_PATH = ARTIFACTS_DIR / "neural_metrics.json"
 
 
-def load_training_data() -> tuple[pd.DataFrame, pd.Series]:
-    # Sprint 1: usa dataset sintético compatível com o motor atual.
-    # Sprint 2: pode ser substituído por export do banco/telemetria real.
-    return _synth_dataset(n=4000, seed=42)
+def load_training_data() -> tuple[pd.DataFrame, pd.Series, dict]:
+    return load_tabular_training_data(prefer_real=True, n_synthetic=4000, seed=42)
 
 
 def train_neural_network() -> dict:
-    X, y = load_training_data()
+    X, y, training_metadata = load_training_data()
 
     X_train, X_test, y_train, y_test = train_test_split(
         X[FEATURES], y, test_size=0.2, random_state=42
@@ -61,6 +60,9 @@ def train_neural_network() -> dict:
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "features": FEATURES,
+        "training_dataset": training_metadata.get("dataset", "unknown"),
+        "training_source": training_metadata.get("source", "unknown"),
+        "training_path": training_metadata.get("path"),
     }
 
     bundle = {

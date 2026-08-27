@@ -19,6 +19,11 @@ FEATURES = [
     "solo_instavel",
     "clima_code",
     "operation_code",
+    "temperatura_c",
+    "umidade_ar",
+    "pressao_hpa",
+    "distancia_obstaculo",
+    "gps_accuracy_m",
 ]
 
 def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Series]:
@@ -32,6 +37,11 @@ def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Seri
     solo_instavel = rng.integers(0, 2, n)
     clima_code = rng.integers(0, 5, n)
     operation_code = rng.integers(0, 4, n)
+    temperatura_c = rng.uniform(12, 39, n)
+    umidade_ar = rng.uniform(35, 100, n)
+    pressao_hpa = rng.uniform(900, 1025, n)
+    distancia_obstaculo = rng.uniform(0.4, 60, n)
+    gps_accuracy_m = rng.uniform(0.8, 35, n)
 
     risco = (
         0.32 * umidade_solo +
@@ -44,6 +54,12 @@ def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Seri
         5.0 * (clima_code == 2).astype(float) +
         7.0 * (clima_code == 3).astype(float) +
         4.0 * (operation_code == 2).astype(float) +
+        0.75 * np.maximum(0, temperatura_c - 32) +
+        0.22 * np.maximum(0, umidade_ar - 85) +
+        0.06 * np.maximum(0, 960 - pressao_hpa) +
+        13.0 * (distancia_obstaculo < 1.5).astype(float) +
+        6.0 * ((distancia_obstaculo >= 1.5) & (distancia_obstaculo < 3.0)).astype(float) +
+        0.12 * np.maximum(0, gps_accuracy_m - 15) +
         rng.normal(0, 7, n)
     )
     risco = np.clip(risco, 0, 100)
@@ -58,6 +74,11 @@ def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Seri
         "solo_instavel": solo_instavel,
         "clima_code": clima_code,
         "operation_code": operation_code,
+        "temperatura_c": temperatura_c,
+        "umidade_ar": umidade_ar,
+        "pressao_hpa": pressao_hpa,
+        "distancia_obstaculo": distancia_obstaculo,
+        "gps_accuracy_m": gps_accuracy_m,
     })
     y = pd.Series(risco, name="risk_score")
     return X, y
@@ -105,6 +126,8 @@ def train_or_load_model():
 
 def predict_risk(bundle: Dict, features: Dict[str, float]) -> float:
     model = bundle["model"]
-    df = pd.DataFrame([features], columns=FEATURES)
+    feature_names = bundle.get("feature_names") or FEATURES
+    row = {name: float(features.get(name, 0.0)) for name in feature_names}
+    df = pd.DataFrame([row], columns=feature_names)
     pred = float(model.predict(df)[0])
     return float(np.clip(pred, 0, 100))

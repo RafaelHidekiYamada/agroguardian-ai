@@ -17,9 +17,9 @@ def build_operational_context(
         "weather": weather,
         "geo_context": geo_context,
         "sources": {
-            "telemetry": "payload",
+            "telemetry": "payload/esp32",
             "weather": weather.get("source", "unknown"),
-            "geointelligence": "internal_geo_engine",
+            "geointelligence": geo_context.get("nearest_water", {}).get("source", "internal_geo_engine"),
         },
     }
 
@@ -55,6 +55,8 @@ def build_system_architecture() -> Dict[str, Any]:
                 "name": "Entrada de dados",
                 "components": [
                     "telemetria manual/simulada",
+                    "telemetria ESP32",
+                    "sensores de temperatura, umidade, pressao, inclinacao e obstaculo",
                     "coordenadas geográficas",
                     "clima externo",
                     "dados operacionais",
@@ -67,6 +69,7 @@ def build_system_architecture() -> Dict[str, Any]:
                     "feature_engineering",
                     "weather_service",
                     "geointelligence",
+                    "openstreetmap_overpass",
                 ],
             },
             {
@@ -147,6 +150,10 @@ def build_system_status() -> Dict[str, Any]:
         "modules": {
             "weather_service": "enabled",
             "geointelligence": "enabled",
+            "openstreetmap_overpass": "enabled",
+            "esp32_telemetry": "enabled",
+            "regional_risk": "enabled",
+            "equipment_history_risk": "enabled",
             "route_ai": "enabled",
             "explainability": "enabled",
             "audit": "enabled",

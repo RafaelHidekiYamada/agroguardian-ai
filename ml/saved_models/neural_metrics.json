@@ -1,10 +1,10 @@
 {
   "model_name": "mlp_regressor",
-  "mae": 3.9311,
-  "rmse": 5.6056,
-  "r2": 0.8633,
-  "n_train": 3200,
-  "n_test": 800,
+  "mae": 1.5893,
+  "rmse": 2.1314,
+  "r2": 0.9889,
+  "n_train": 4093,
+  "n_test": 1024,
   "features": [
     "umidade_solo",
     "inclinacao",
@@ -14,6 +14,14 @@
     "chuva_mm",
     "solo_instavel",
     "clima_code",
-    "operation_code"
-  ]
+    "operation_code",
+    "temperatura_c",
+    "umidade_ar",
+    "pressao_hpa",
+    "distancia_obstaculo",
+    "gps_accuracy_m"
+  ],
+  "training_dataset": "nasa_power_agroguardian_training",
+  "training_source": "NASA POWER Daily API",
+  "training_path": "C:\\Users\\rafae\\Desktop\\agroguardian_ai\\ml\\data\\nasa_power_agroguardian_training.csv"
 }

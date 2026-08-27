@@ -1,11 +1,17 @@
 from __future__ import annotations
-from pathlib import Path
 import json
-import sqlite3
+import sys
+from pathlib import Path
+
 import pandas as pd
+from sqlalchemy import create_engine, text
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT_DIR / "agroguardian.db"
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from backend.config import settings
+
 OUTPUT_DIR = ROOT_DIR / "data_science_r" / "data"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -13,15 +19,13 @@ OUTPUT_CSV = OUTPUT_DIR / "agroguardian_predictions.csv"
 
 
 def main():
-    if not DB_PATH.exists():
-        print(f"Banco não encontrado em: {DB_PATH}")
-        return
-
-    conn = sqlite3.connect(DB_PATH)
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
 
     try:
-        df = pd.read_sql_query(
-            """
+        with engine.connect() as connection:
+            df = pd.read_sql_query(
+                text(
+                    """
             SELECT
                 id,
                 timestamp,
@@ -34,9 +38,10 @@ def main():
                 input_payload,
                 weather_payload
             FROM prediction_records
-            """,
-            conn,
-        )
+                    """
+                ),
+                connection,
+            )
 
         expanded_rows = []
 
@@ -78,7 +83,7 @@ def main():
         print(f"Total de linhas exportadas: {len(final_df)}")
 
     finally:
-        conn.close()
+        engine.dispose()
 
 
 if __name__ == "__main__":
