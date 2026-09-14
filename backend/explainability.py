@@ -172,6 +172,9 @@ def build_structured_explanation(
 ) -> Dict[str, Any]:
     factors: list[dict[str, Any]] = []
     risk_components = risk_components or {}
+    iot_snapshot = payload.get("iot_snapshot") if isinstance(payload.get("iot_snapshot"), dict) else {}
+    iot_values = iot_snapshot.get("iot") if isinstance(iot_snapshot.get("iot"), dict) else {}
+    soil_values = iot_snapshot.get("soil") if isinstance(iot_snapshot.get("soil"), dict) else {}
 
     humidity_soil = payload.get("umidade_solo")
     rain_mm = payload.get("chuva_mm")
@@ -183,6 +186,7 @@ def build_structured_explanation(
             unit="%",
             impact_points=max(0.0, (float(humidity_soil) - 60.0) * 0.38 + float(rain_mm or 0) * 0.45),
             explanation="Solo/umidade elevaram o risco porque reduzem aderencia e aumentam chance de atolamento.",
+            source="sensor de umidade do solo" if soil_values.get("source") == "sensor" else "context",
         )
 
     max_tilt = payload.get("max_tilt_angle", payload.get("inclinacao"))
@@ -207,6 +211,7 @@ def build_structured_explanation(
         )
 
     obstacle_cm = payload.get("obstacle_distance_cm")
+    ultrasonic_source = str(iot_values.get("ultrasonic_sensor_model") or "sensor ultrassonico")
     if obstacle_cm is None and payload.get("distancia_obstaculo") is not None:
         obstacle_cm = float(payload["distancia_obstaculo"]) * 100.0
     if obstacle_cm is not None:
@@ -226,7 +231,7 @@ def build_structured_explanation(
             unit="cm",
             impact_points=impact,
             explanation="Sensor de obstaculo indicou distancia que aumenta risco de colisao.",
-            source="JSN-SR04T",
+            source=ultrasonic_source,
         )
     elif payload.get("obstacle_detected") is True:
         _add_factor(
@@ -236,7 +241,7 @@ def build_structured_explanation(
             unit="binary",
             impact_points=8.0,
             explanation="Sensor de obstaculo indicou presenca, mas sem distancia para calibrar severidade.",
-            source="JSN-SR04T",
+            source=ultrasonic_source,
         )
 
     movement = payload.get("movement_anomaly_score")

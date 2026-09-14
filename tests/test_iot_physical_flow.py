@@ -62,21 +62,31 @@ def _physical_payload(device_id: str, sequence_number: int, *, critical: bool = 
         "sequence_number": sequence_number,
         "operation_type": "campo",
         "firmware_version": "test-physical",
+        "soil_moisture_pct": 92.0 if critical else 44.0,
+        "battery_voltage": 4.91,
         "bme280": {
             "temperature_c": 42.0 if critical else 27.0,
             "humidity_pct": 96.0 if critical else 68.0,
             "pressure_hpa": 955.0 if critical else 1011.0,
         },
-        "jsn_sr04t": {"distance_cm": 20.0 if critical else 240.0, "timeout": False, "out_of_range": False},
+        "ultrasonic": {
+            "sensor_model": "HC-SR04",
+            "distance_cm": 20.0 if critical else 240.0,
+            "timeout": False,
+            "out_of_range": False,
+        },
         "mpu6050": {
             "accel_x": 18.0 if critical else 0.1,
             "accel_y": -12.0 if critical else -0.1,
             "accel_z": 16.0 if critical else 9.78,
+            "gyro_x": 320.0 if critical else 0.3,
+            "gyro_y": 240.0 if critical else 0.4,
+            "gyro_z": 80.0 if critical else 0.2,
             "pitch": 30.0 if critical else 4.0,
             "roll": 12.0 if critical else 1.0,
             "inclination_deg": 30.0 if critical else 4.0,
         },
-        "gps": {"latitude": -23.455, "longitude": -46.533},
+        "gps": {"latitude": -23.455, "longitude": -46.533, "accuracy_m": 3.2, "satellites": 10},
         "speed_kmh": 0,
     }
 
@@ -107,14 +117,25 @@ def test_canonical_payload_persists_prediction_factors_and_events(client: TestCl
         assert telemetry is not None
         assert telemetry.iot_device_id is not None
         assert telemetry.sequence_number == 1
-        assert telemetry.raw_payload_json["jsn_sr04t"]["distance_cm"] == 20.0
+        assert telemetry.raw_payload_json["ultrasonic"]["distance_cm"] == 20.0
+        assert telemetry.ultrasonic_sensor_model == "HC-SR04"
+        assert telemetry.soil_moisture_pct == 92.0
+        assert telemetry.battery_voltage == 4.91
+        assert telemetry.gps_accuracy_m == 3.2
+        assert telemetry.gps_satellites == 10
         prediction = (
             db.query(models.RiskPrediction)
             .filter(models.RiskPrediction.telemetry_id == telemetry.id)
             .one()
         )
         categories = {factor.factor_category for factor in prediction.factors}
-        assert {"iot_jsn_sr04t", "iot_mpu6050", "iot_bme280"}.issubset(categories)
+        assert {"iot_ultrasonic", "iot_mpu6050", "iot_bme280"}.issubset(categories)
+        assert prediction.input_snapshot_json["umidade_solo"] == 92.0
+        assert prediction.input_snapshot_json["iot_snapshot"]["soil"]["source"] == "sensor"
+        soil_factor = next(
+            factor for factor in telemetry.explanation["factors"] if factor["factor"] == "soil_condition"
+        )
+        assert soil_factor["source"] == "sensor de umidade do solo"
         events = db.query(models.IotEvent).filter(models.IotEvent.telemetry_id == telemetry.id).all()
         assert len(events) >= 3
         assert all(event.risk_prediction_id == prediction.id for event in events)
@@ -122,13 +143,14 @@ def test_canonical_payload_persists_prediction_factors_and_events(client: TestCl
         assert db.query(models.AuditLog).filter(models.AuditLog.action == "iot_critical_event").count() >= 1
 
 
-def test_duplicate_sequence_and_api_key_revocation(client: TestClient):
+def test_duplicate_sequence_is_idempotent_and_api_key_revocation_is_enforced(client: TestClient):
     device_id, api_key, admin_headers = _create_device(client, "SECURITY")
     payload = _physical_payload(device_id, 99)
     first = client.post("/api/v1/iot/telemetry", headers=_device_headers(device_id, api_key), json=payload)
     assert first.status_code == 200, first.text
     duplicate = client.post(ESP_TELEMETRY_ENDPOINT, headers=_device_headers(device_id, api_key), json=payload)
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["telemetry_id"] == first.json()["telemetry_id"]
 
     revoked = client.put(
         f"/api/v1/admin/iot/devices/{device_id}",

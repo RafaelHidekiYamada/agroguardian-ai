@@ -2,17 +2,19 @@
 
 Use `docs/esp32_integration.md` as the canonical contract. The official sender
 route is `POST /api/v1/telemetry/esp`; the old `/api/v1/iot/telemetry` route is
-compatibility-only. The physical MVP
-uses only these sensor groups:
+compatibility-only. The physical firmware uses these sensor groups:
 
 - BME280: temperature, air humidity, and pressure in hPa.
-- JSN-SR04T: obstacle distance in cm.
-- MPU-6050: acceleration on three axes and inclination in degrees.
+- HC-SR04 or JSN-SR04T: model and obstacle distance in cm.
+- MPU-6050: acceleration, gyroscope, pitch, roll, and inclination.
+- Capacitive soil sensor: physical soil moisture percentage when enabled.
+- Optional GPS and battery readings.
 
 The dashboard and risk engine consume records from `iot_telemetry`, not the
 legacy `sensor_readings` table. Every accepted reading keeps raw payload,
 canonical values, derived motion values, data quality, freshness, and an
-optional linked risk prediction.
+optional linked risk prediction. The API commits the reading before running
+the AI, so an inference failure does not erase sensor history.
 
 Run the HTTPS simulator after provisioning a device. `AGROGUARDIAN_API_URL` can
 be the public API base URL or the full official endpoint:

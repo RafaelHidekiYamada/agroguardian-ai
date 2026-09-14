@@ -1,0 +1,6 @@
+Os headers de configuracao do firmware ficam nesta pasta.
+
+- Config.h: pinos, intervalos e sensores opcionais.
+- Secrets.example.h: modelo versionado de credenciais.
+- Secrets.h: copia local ignorada pelo Git.
+- TlsRootCa.h: CA publica usada para validar o HTTPS da API.

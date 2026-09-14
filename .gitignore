@@ -9,4 +9,8 @@ migration_smoke.sqlite
 legacy_migration_smoke.sqlite
 .alembic_autogen.sqlite
 artifacts/*.joblib
+artifacts/*.zip
 .streamlit/
+firmware/**/.pio/
+firmware/**/.vscode/
+firmware/**/include/Secrets.h

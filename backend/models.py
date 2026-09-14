@@ -450,6 +450,22 @@ class IotTelemetry(Base):
             name="ck_iot_telemetry_quality_status",
         ),
         CheckConstraint("distance_cm IS NULL OR distance_cm >= 0", name="ck_iot_telemetry_distance_cm"),
+        CheckConstraint(
+            "soil_moisture_pct IS NULL OR (soil_moisture_pct >= 0 AND soil_moisture_pct <= 100)",
+            name="ck_iot_telemetry_soil_moisture_pct",
+        ),
+        CheckConstraint(
+            "battery_voltage IS NULL OR (battery_voltage >= 0 AND battery_voltage <= 30)",
+            name="ck_iot_telemetry_battery_voltage",
+        ),
+        CheckConstraint(
+            "gps_accuracy_m IS NULL OR (gps_accuracy_m >= 0 AND gps_accuracy_m <= 1000)",
+            name="ck_iot_telemetry_gps_accuracy_m",
+        ),
+        CheckConstraint(
+            "gps_satellites IS NULL OR (gps_satellites >= 0 AND gps_satellites <= 64)",
+            name="ck_iot_telemetry_gps_satellites",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -472,6 +488,8 @@ class IotTelemetry(Base):
     humidity_pct = Column(Float, nullable=True)
     pressure_hpa = Column(Float, nullable=True)
     altitude_m = Column(Float, nullable=True)
+    soil_moisture_pct = Column(Float, nullable=True)
+    battery_voltage = Column(Float, nullable=True)
 
     accel_x = Column(Float, nullable=True)
     accel_y = Column(Float, nullable=True)
@@ -491,10 +509,13 @@ class IotTelemetry(Base):
     obstacle_detected = Column(Boolean, nullable=True)
     obstacle_distance_cm = Column(Float, nullable=True)
     distance_cm = Column(Float, nullable=True)
+    ultrasonic_sensor_model = Column(String(80), nullable=True)
     inclination_deg = Column(Float, nullable=True)
 
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
+    gps_accuracy_m = Column(Float, nullable=True)
+    gps_satellites = Column(Integer, nullable=True)
 
     telemetry_age_seconds = Column(Float, nullable=False, default=0.0)
     telemetry_status = Column(String(20), default="LIVE", nullable=False)

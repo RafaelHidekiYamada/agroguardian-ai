@@ -437,18 +437,25 @@ class ObstaclePayload(BaseModel):
     model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
 
-class JSNSR04TPayload(BaseModel):
+class UltrasonicPayload(BaseModel):
     distance_cm: float | None = Field(default=None, ge=0, le=100000)
     detected: bool | None = None
     timeout: bool = False
     out_of_range: bool = False
+    sensor_model: str | None = Field(default=None, min_length=2, max_length=80)
 
     model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+
+
+class JSNSR04TPayload(UltrasonicPayload):
+    """Legacy name retained in the public compatibility contract."""
 
 
 class GPSPayload(BaseModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0, le=1000)
+    satellites: int | None = Field(default=None, ge=0, le=64)
 
     model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
@@ -459,6 +466,7 @@ class IotTelemetryInput(BaseModel):
     sequence_number: int | None = Field(default=None, ge=0)
     bme280: BME280Payload | None = None
     mpu6050: MPU6050Payload | None = None
+    ultrasonic: UltrasonicPayload | None = None
     jsn_sr04t: JSNSR04TPayload | None = None
     # Kept as a compatibility adapter for older simulator and dashboard payloads.
     obstacle: ObstaclePayload | None = None
@@ -466,6 +474,8 @@ class IotTelemetryInput(BaseModel):
     operation_type: str = "campo"
     speed_kmh: float | None = Field(default=None, ge=0, le=200)
     rain_mm: float | None = Field(default=None, ge=0, le=500)
+    soil_moisture_pct: float | None = Field(default=None, ge=0, le=100)
+    battery_voltage: float | None = Field(default=None, ge=0, le=30)
     firmware_version: str | None = None
 
     model_config = ConfigDict(extra="allow", allow_inf_nan=False)
@@ -525,6 +535,9 @@ class IotTelemetryInput(BaseModel):
         if "jsn_sr04t" not in normalized and "obstacle" in normalized:
             normalized["jsn_sr04t"] = normalized["obstacle"]
 
+        if "ultrasonic" not in normalized and "ultrasonic_sensor" in normalized:
+            normalized["ultrasonic"] = normalized["ultrasonic_sensor"]
+
         if "jsn_sr04t" not in normalized:
             obstacle = {}
             if "obstacle_detected" in normalized:
@@ -552,8 +565,29 @@ class IotTelemetryInput(BaseModel):
                 gps["longitude"] = normalized["longitude"]
             if "gps_longitude" in normalized:
                 gps["longitude"] = normalized["gps_longitude"]
+            if "gps_accuracy_m" in normalized:
+                gps["accuracy_m"] = normalized["gps_accuracy_m"]
+            if "gps_satellites" in normalized:
+                gps["satellites"] = normalized["gps_satellites"]
             if gps:
                 normalized["gps"] = gps
+
+        gps_payload = normalized.get("gps")
+        if isinstance(gps_payload, dict):
+            gps_payload = dict(gps_payload)
+            if "accuracy_m" not in gps_payload and "gps_accuracy_m" in gps_payload:
+                gps_payload["accuracy_m"] = gps_payload["gps_accuracy_m"]
+            if "satellites" not in gps_payload and "gps_satellites" in gps_payload:
+                gps_payload["satellites"] = gps_payload["gps_satellites"]
+            normalized["gps"] = gps_payload
+
+        if "soil_moisture_pct" not in normalized:
+            for alias in ("soil_humidity_pct", "umidade_solo"):
+                if alias in normalized:
+                    normalized["soil_moisture_pct"] = normalized[alias]
+                    break
+        if "battery_voltage" not in normalized and "battery_v" in normalized:
+            normalized["battery_voltage"] = normalized["battery_v"]
 
         if "rain_mm" not in normalized and "chuva_mm" in normalized:
             normalized["rain_mm"] = normalized["chuva_mm"]
@@ -645,6 +679,37 @@ class IotDeviceResponse(BaseModel):
     farm_name: str | None = None
     telemetry_count: int | None = None
     latest_telemetry: dict[str, Any] | None = None
+
+
+class FarmCreate(BaseModel):
+    client_name: str = Field(min_length=2, max_length=160)
+    name: str = Field(min_length=2, max_length=120)
+    region: str = Field(min_length=2, max_length=120)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    municipality: str | None = Field(default=None, max_length=120)
+    state: str | None = Field(default=None, max_length=80)
+    country: str = Field(default="BR", min_length=2, max_length=2)
+    total_area_ha: float | None = Field(default=None, ge=0)
+    cultivated_area_ha: float | None = Field(default=None, ge=0)
+    main_crop: str | None = Field(default=None, max_length=120)
+    notes: str | None = None
+
+    @model_validator(mode="after")
+    def validate_areas(self):
+        self.client_name = self.client_name.strip()
+        self.name = self.name.strip()
+        self.region = self.region.strip()
+        if min(len(self.client_name), len(self.name), len(self.region)) < 2:
+            raise ValueError("cliente, fazenda e regiao devem conter ao menos 2 caracteres")
+        if (
+            self.total_area_ha is not None
+            and self.cultivated_area_ha is not None
+            and self.cultivated_area_ha > self.total_area_ha
+        ):
+            raise ValueError("cultivated_area_ha nao pode exceder total_area_ha")
+        self.country = self.country.upper()
+        return self
 
 
 class EquipmentCreate(BaseModel):

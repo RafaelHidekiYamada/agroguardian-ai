@@ -64,6 +64,7 @@ AUTH_ME_URL = f"{API_BASE_URL}/api/v1/auth/me"
 ADMIN_USERS_URL = f"{API_BASE_URL}/api/v1/admin/users"
 ADMIN_ROLES_URL = f"{API_BASE_URL}/api/v1/admin/roles"
 ADMIN_PERMISSIONS_URL = f"{API_BASE_URL}/api/v1/admin/permissions"
+ADMIN_FARMS_URL = f"{API_BASE_URL}/api/v1/admin/farms"
 ADMIN_EQUIPMENTS_URL = f"{API_BASE_URL}/api/v1/admin/equipments"
 IOT_DEVICES_URL = f"{API_BASE_URL}/api/v1/iot/devices"
 ADMIN_IOT_DEVICES_URL = f"{API_BASE_URL}/api/v1/admin/iot/devices"
@@ -1561,7 +1562,9 @@ with tab_map["Operação em tempo real"]:
             esp_accel_z = st.number_input("MPU accel Z", value=9.74, step=0.01, key="esp_accel_z")
             esp_inclination = st.number_input("MPU inclinacao graus", min_value=0.0, max_value=180.0, value=float(inclinacao), step=0.1, key="esp_inclination")
         with esp_col3:
-            esp_distance = st.number_input("JSN-SR04T distancia cm", min_value=0.0, value=185.0, step=1.0, key="esp_distance")
+            esp_distance = st.number_input("HC-SR04 distancia cm", min_value=0.0, value=185.0, step=1.0, key="esp_distance")
+            esp_soil_moisture = st.number_input("Umidade do solo %", min_value=0.0, max_value=100.0, value=55.0, step=0.5, key="esp_soil_moisture")
+            esp_battery_voltage = st.number_input("Bateria V", min_value=0.0, max_value=30.0, value=5.0, step=0.1, key="esp_battery_voltage")
             esp_send = st.button("Enviar leitura ESP32", key="btn_send_esp")
 
         if esp_send:
@@ -1573,6 +1576,8 @@ with tab_map["Operação em tempo real"]:
                 "sequence_number": sequence,
                 "operation_type": operation_type,
                 "firmware_version": "dashboard-physical-test",
+                "soil_moisture_pct": float(esp_soil_moisture),
+                "battery_voltage": float(esp_battery_voltage),
                 "bme280": {
                     "temperature_c": float(esp_temperature),
                     "humidity_pct": float(esp_humidity),
@@ -1584,7 +1589,7 @@ with tab_map["Operação em tempo real"]:
                     "accel_z": float(esp_accel_z),
                     "inclination_deg": float(esp_inclination),
                 },
-                "jsn_sr04t": {"distance_cm": float(esp_distance)},
+                "ultrasonic": {"sensor_model": "HC-SR04", "distance_cm": float(esp_distance)},
             }
 
             ok_esp, esp_result = post_json(
@@ -1816,7 +1821,14 @@ if "Telemetria" in tab_map:
                 s1, s2, s3 = st.columns(3)
                 s1.metric("MPU movimento", format_measurement(latest.get("movement_anomaly_score"), "score"))
                 s2.metric("MPU impacto", "SIM" if latest.get("possible_impact") else "NAO")
-                s3.metric("JSN distancia", format_measurement(latest.get("distance_cm"), "cm"))
+                ultrasonic_model = latest.get("ultrasonic_sensor_model") or "Ultrassonico"
+                s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
+
+                e1, e2, e3, e4 = st.columns(4)
+                e1.metric("Umidade do solo", format_measurement(latest.get("soil_moisture_pct"), "%"))
+                e2.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
+                e3.metric("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"))
+                e4.metric("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D")
 
                 o1, o2, o3 = st.columns(3)
                 o1.metric("Qualidade", latest.get("data_quality_status", "-"))
@@ -1824,7 +1836,7 @@ if "Telemetria" in tab_map:
                 obstacle_status = "Detectado" if latest.get("obstacle_detected") else "Sem alerta"
                 if latest.get("distance_cm") is None:
                     obstacle_status = "N/D"
-                o3.metric("JSN obstaculo", obstacle_status)
+                o3.metric("Obstaculo ultrassonico", obstacle_status)
 
                 issues = latest.get("data_quality_issues") or []
                 if issues:
@@ -1852,7 +1864,11 @@ if "Telemetria" in tab_map:
                 if not hist_df.empty:
                     st.dataframe(hist_df, use_container_width=True)
                     time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
-                    bme_cols = [col for col in ["temperature_c", "humidity_pct", "pressure_hpa"] if col in hist_df.columns]
+                    bme_cols = [
+                        col
+                        for col in ["temperature_c", "humidity_pct", "pressure_hpa", "soil_moisture_pct", "battery_voltage"]
+                        if col in hist_df.columns
+                    ]
                     motion_cols = [
                         col
                         for col in [
@@ -1868,10 +1884,10 @@ if "Telemetria" in tab_map:
                         if col in hist_df.columns
                     ]
                     if time_col in hist_df.columns and bme_cols:
-                        st.caption("BME280 no periodo")
+                        st.caption("Ambiente, solo e bateria no periodo")
                         st.line_chart(hist_df[[time_col, *bme_cols]].set_index(time_col)[bme_cols])
                     if time_col in hist_df.columns and motion_cols:
-                        st.caption("JSN-SR04T, MPU-6050 e risco no periodo")
+                        st.caption("Ultrassonico, MPU-6050 e risco no periodo")
                         st.line_chart(hist_df[[time_col, *motion_cols]].set_index(time_col)[motion_cols])
                 else:
                     st.info("Sem historico no periodo selecionado.")
@@ -1891,6 +1907,18 @@ if "Telemetria" in tab_map:
 if "Equipamentos" in tab_map:
     with tab_map["Equipamentos"]:
         st.markdown("### Equipamentos e Dispositivos IoT")
+        onboarding_message = st.session_state.pop("iot_onboarding_message", None)
+        if onboarding_message:
+            st.success(onboarding_message)
+
+        ok_farms, farm_rows = get_json(FARMS_URL)
+        if ok_farms:
+            farm_df = any_to_dataframe(farm_rows)
+            st.markdown("#### Fazendas")
+            st.dataframe(farm_df, use_container_width=True)
+        else:
+            show_api_error("Erro ao carregar fazendas", farm_rows)
+            farm_df = pd.DataFrame()
 
         ok_equipment, equipment_rows = get_json(EQUIPMENTS_URL)
         if ok_equipment:
@@ -1910,31 +1938,80 @@ if "Equipamentos" in tab_map:
             show_api_error("Erro ao carregar dispositivos", device_rows)
             devices_df = pd.DataFrame()
 
+        if has_permission("farms.create"):
+            with st.expander("Cadastrar fazenda", expanded=farm_df.empty):
+                with st.form("create_farm_form"):
+                    farm_col1, farm_col2 = st.columns(2)
+                    with farm_col1:
+                        farm_client = st.text_input("Cliente da fazenda", value="Cliente AgroGuardian")
+                        farm_name = st.text_input("Nome da fazenda", value="Fazenda Principal")
+                        farm_municipality = st.text_input("Municipio", value="Guarulhos")
+                        farm_state = st.text_input("Estado", value="SP")
+                        farm_region = st.text_input("Regiao", value="Guarulhos - SP")
+                    with farm_col2:
+                        farm_latitude = st.number_input("Latitude", min_value=-90.0, max_value=90.0, value=-23.455, format="%.7f")
+                        farm_longitude = st.number_input("Longitude", min_value=-180.0, max_value=180.0, value=-46.533, format="%.7f")
+                        farm_area = st.number_input("Area total (ha)", min_value=0.0, value=0.0, step=1.0)
+                        farm_crop = st.text_input("Cultura principal", value="")
+                    submit_farm = st.form_submit_button("Salvar fazenda")
+                if submit_farm:
+                    payload = {
+                        "client_name": farm_client,
+                        "name": farm_name,
+                        "region": farm_region,
+                        "latitude": float(farm_latitude),
+                        "longitude": float(farm_longitude),
+                        "municipality": farm_municipality or None,
+                        "state": farm_state or None,
+                        "country": "BR",
+                        "total_area_ha": float(farm_area) if farm_area > 0 else None,
+                        "main_crop": farm_crop or None,
+                    }
+                    ok_create_farm, farm_result = post_json(ADMIN_FARMS_URL, payload)
+                    if ok_create_farm:
+                        st.session_state["iot_onboarding_message"] = (
+                            f"Fazenda criada com ID {farm_result.get('farm_id')}. Agora cadastre o equipamento."
+                        )
+                        st.rerun()
+                    else:
+                        show_api_error("Erro ao criar fazenda", farm_result)
+
         if has_permission("equipments.create"):
             with st.expander("Cadastrar equipamento", expanded=False):
+                farm_options = []
+                if not farm_df.empty:
+                    farm_options = [
+                        f"{int(row['farm_id'])} - {row.get('farm_name', 'Fazenda')}"
+                        for _, row in farm_df.iterrows()
+                    ]
                 with st.form("create_equipment_form"):
                     eq_name = st.text_input("Nome", value="Trator 01")
                     eq_type = st.text_input("Tipo", value="Trator")
-                    eq_client = st.text_input("Cliente", value="Cliente Demo")
-                    eq_farm = st.number_input("Farm ID", min_value=1, value=1, step=1)
+                    eq_client = st.text_input("Cliente", value="Cliente AgroGuardian")
+                    eq_farm_label = st.selectbox(
+                        "Fazenda vinculada",
+                        farm_options or ["Cadastre uma fazenda primeiro"],
+                    )
                     eq_model = st.text_input("Modelo", value="John Deere 6110J")
                     eq_year = st.number_input("Ano", min_value=1900, max_value=2100, value=2024, step=1)
                     eq_status = st.selectbox("Status", ["active", "inactive", "maintenance"], key="eq_status")
-                    submit_eq = st.form_submit_button("Salvar equipamento")
+                    submit_eq = st.form_submit_button("Salvar equipamento", disabled=not farm_options)
                 if submit_eq:
                     payload = {
                         "name": eq_name,
                         "equipment_type": eq_type,
                         "client_name": eq_client,
-                        "farm_id": int(eq_farm),
+                        "farm_id": int(eq_farm_label.split(" - ")[0]),
                         "model": eq_model,
                         "year": int(eq_year),
                         "status": eq_status,
                     }
                     ok_create, create_result = post_json(ADMIN_EQUIPMENTS_URL, payload)
                     if ok_create:
-                        st.success("Equipamento criado.")
-                        st.json(create_result)
+                        st.session_state["iot_onboarding_message"] = (
+                            f"Equipamento criado com ID {create_result.get('equipment_id')}. Agora cadastre o ESP32."
+                        )
+                        st.rerun()
                     else:
                         show_api_error("Erro ao criar equipamento", create_result)
 
@@ -1952,7 +2029,7 @@ if "Equipamentos" in tab_map:
                     dev_equipment_label = st.selectbox("Equipamento vinculado", equipment_options or ["1 - Equipamento 1"])
                     dev_firmware = st.text_input("Firmware", value="1.0.0")
                     dev_status = st.selectbox("Status inicial", ["offline", "online", "maintenance", "disabled"], key="dev_status")
-                    submit_dev = st.form_submit_button("Gerar credencial")
+                    submit_dev = st.form_submit_button("Gerar credencial", disabled=not equipment_options)
                 if submit_dev:
                     payload = {
                         "device_identifier": dev_id,
@@ -1966,6 +2043,15 @@ if "Equipamentos" in tab_map:
                     if ok_dev:
                         st.success("ESP32 cadastrado. A API key aparece apenas agora.")
                         st.json(dev_result)
+                        generated_key = dev_result.get("api_key")
+                        generated_device_id = dev_result.get("device_id", dev_id)
+                        if generated_key:
+                            st.caption("Copie estas duas linhas para include/Secrets.h junto com seu Wi-Fi:")
+                            st.code(
+                                f'#define AGROGUARDIAN_DEVICE_ID "{generated_device_id}"\n'
+                                f'#define AGROGUARDIAN_DEVICE_API_KEY "{generated_key}"',
+                                language="cpp",
+                            )
                     else:
                         show_api_error("Erro ao cadastrar ESP32", dev_result)
 

@@ -106,8 +106,18 @@ def _sensor_missing(sensor: Any, fields: tuple[str, ...]) -> bool:
     return all(getattr(sensor, field, None) is None for field in fields)
 
 
-def _jsn_sensor(payload: IotTelemetryInput):
-    return payload.jsn_sr04t or payload.obstacle
+def _ultrasonic_sensor(payload: IotTelemetryInput):
+    """Resolve the canonical ultrasonic reading while retaining legacy aliases."""
+    return payload.ultrasonic or payload.jsn_sr04t or payload.obstacle
+
+
+def _ultrasonic_sensor_model(payload: IotTelemetryInput, sensor: Any) -> str | None:
+    explicit_model = getattr(sensor, "sensor_model", None) if sensor is not None else None
+    if explicit_model:
+        return str(explicit_model)
+    if payload.ultrasonic is None and payload.jsn_sr04t is not None:
+        return "JSN-SR04T"
+    return None
 
 
 def _infer_climate(payload: IotTelemetryInput) -> str:
@@ -134,18 +144,18 @@ def evaluate_iot_quality(
 ) -> dict[str, Any]:
     missing_sensors: list[str] = []
     issues: list[str] = []
-    jsn = _jsn_sensor(payload)
+    ultrasonic = _ultrasonic_sensor(payload)
 
     if _sensor_missing(payload.bme280, ("temperature_c", "humidity_pct", "pressure_hpa")):
         missing_sensors.append("BME280")
     if _sensor_missing(payload.mpu6050, ("accel_x", "accel_y", "accel_z", "inclination_deg", "pitch", "roll")):
         missing_sensors.append("MPU6050")
-    if _sensor_missing(jsn, ("distance_cm",)):
-        missing_sensors.append("JSN_SR04T")
-    if jsn is not None and bool(getattr(jsn, "timeout", False)):
-        issues.append("JSN-SR04T sem leitura por timeout")
-    if jsn is not None and bool(getattr(jsn, "out_of_range", False)):
-        issues.append("JSN-SR04T fora de alcance")
+    if _sensor_missing(ultrasonic, ("distance_cm",)):
+        missing_sensors.append("ULTRASONIC")
+    if ultrasonic is not None and bool(getattr(ultrasonic, "timeout", False)):
+        issues.append("sensor ultrassonico sem leitura por timeout")
+    if ultrasonic is not None and bool(getattr(ultrasonic, "out_of_range", False)):
+        issues.append("sensor ultrassonico fora de alcance")
 
     age = telemetry_age_seconds(timestamp)
     freshness = telemetry_status(age)
@@ -193,7 +203,8 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
     timestamp = normalize_timestamp(payload.timestamp)
     bme = payload.bme280
     mpu = payload.mpu6050
-    jsn = _jsn_sensor(payload)
+    ultrasonic = _ultrasonic_sensor(payload)
+    ultrasonic_sensor_model = _ultrasonic_sensor_model(payload, ultrasonic)
     gps = payload.gps
 
     mpu_features = build_mpu6050_features(
@@ -212,8 +223,8 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
     )
     quality = evaluate_iot_quality(payload, timestamp, mpu_features)
 
-    distance_cm = jsn.distance_cm if jsn else None
-    obstacle_detected = getattr(jsn, "detected", None) if jsn else None
+    distance_cm = ultrasonic.distance_cm if ultrasonic else None
+    obstacle_detected = getattr(ultrasonic, "detected", None) if ultrasonic else None
     if obstacle_detected is None and distance_cm is not None:
         obstacle_detected = float(distance_cm) <= settings.iot_distance_attention_cm
 
@@ -223,16 +234,22 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
     # the same absolute maximum for compatibility with older devices.
     inclination_deg = mpu_features.get("max_tilt_angle")
     rain_mm = float(payload.rain_mm or 0)
-    # Air humidity is not treated as soil moisture. This is a neutral fallback
-    # until a real soil source is integrated with the decision.
-    soil_proxy = min(100.0, max(0.0, 50.0 + min(rain_mm * 2.0, 35.0)))
+    # Air humidity is not treated as soil moisture. A real physical reading has
+    # priority; the neutral rain-derived value only covers devices without it.
+    soil_moisture_pct = payload.soil_moisture_pct
+    soil_source = "sensor" if soil_moisture_pct is not None else "fallback"
+    if soil_moisture_pct is None:
+        soil_moisture_pct = min(100.0, max(0.0, 50.0 + min(rain_mm * 2.0, 35.0)))
     solo_instavel = int(rain_mm >= 10 and inclination_deg is not None and inclination_deg >= settings.iot_inclination_attention_deg)
 
     iot_snapshot = {
         "temperature_c": bme.temperature_c if bme else None,
         "humidity_pct": bme.humidity_pct if bme else None,
         "pressure_hpa": bme.pressure_hpa if bme else None,
+        "soil_moisture_pct": soil_moisture_pct,
+        "battery_voltage": payload.battery_voltage,
         "distance_cm": distance_cm,
+        "ultrasonic_sensor_model": ultrasonic_sensor_model,
         "accel_x": mpu.accel_x if mpu else None,
         "accel_y": mpu.accel_y if mpu else None,
         "accel_z": mpu.accel_z if mpu else None,
@@ -247,6 +264,8 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         "movement_anomaly_score": mpu_features.get("movement_anomaly_score"),
         "possible_impact": mpu_features.get("possible_impact"),
         "obstacle_detected": obstacle_detected,
+        "gps_accuracy_m": gps.accuracy_m if gps else None,
+        "gps_satellites": gps.satellites if gps else None,
         "data_quality_status": quality["data_quality_status"],
         "telemetry_status": quality["telemetry_status"],
     }
@@ -263,8 +282,17 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         telemetry_age_seconds=quality["telemetry_age_seconds"],
         confidence_score=quality["confidence_score"],
         iot=iot_snapshot,
-        soil={"source": "fallback", "moisture_proxy_pct": soil_proxy},
-        terrain={"latitude": latitude, "longitude": longitude},
+        soil={
+            "source": soil_source,
+            "moisture_pct": soil_moisture_pct,
+            "moisture_proxy_pct": soil_moisture_pct if soil_source == "fallback" else None,
+        },
+        terrain={
+            "latitude": latitude,
+            "longitude": longitude,
+            "gps_accuracy_m": gps.accuracy_m if gps else None,
+            "gps_satellites": gps.satellites if gps else None,
+        },
     )
 
     telemetry_input = TelemetryInput(
@@ -273,7 +301,7 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         region=getattr(farm, "region", settings.default_region),
         operation_type=payload.operation_type or "campo",
         clima=_infer_climate(payload),
-        umidade_solo=soil_proxy,
+        umidade_solo=soil_moisture_pct,
         inclinacao=float(inclination_deg or 0.0),
         distancia_agua=999.0,
         velocidade=float(payload.speed_kmh or 0.0),
@@ -283,6 +311,9 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         latitude=float(latitude if latitude is not None else settings.openweather_lat),
         longitude=float(longitude if longitude is not None else settings.openweather_lon),
         device_id=payload.device_id,
+        gps_accuracy_m=gps.accuracy_m if gps else None,
+        gps_satellites=gps.satellites if gps else None,
+        battery_voltage=payload.battery_voltage,
         temperatura_c=bme.temperature_c if bme else None,
         umidade_ar=bme.humidity_pct if bme else None,
         pressao_hpa=bme.pressure_hpa if bme else None,
@@ -311,6 +342,8 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         "humidity_pct": bme.humidity_pct if bme else None,
         "pressure_hpa": bme.pressure_hpa if bme else None,
         "altitude_m": bme.altitude_m if bme else None,
+        "soil_moisture_pct": payload.soil_moisture_pct,
+        "battery_voltage": payload.battery_voltage,
         "accel_x": mpu.accel_x if mpu else None,
         "accel_y": mpu.accel_y if mpu else None,
         "accel_z": mpu.accel_z if mpu else None,
@@ -322,9 +355,12 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         "obstacle_detected": obstacle_detected,
         "obstacle_distance_cm": distance_cm,
         "distance_cm": distance_cm,
+        "ultrasonic_sensor_model": ultrasonic_sensor_model,
         "inclination_deg": inclination_deg,
         "latitude": latitude,
         "longitude": longitude,
+        "gps_accuracy_m": gps.accuracy_m if gps else None,
+        "gps_satellites": gps.satellites if gps else None,
     }
     return {
         "telemetry_input": telemetry_input,
@@ -361,7 +397,10 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "temperature_c": getattr(row, "temperature_c", None),
             "humidity_pct": getattr(row, "humidity_pct", None),
             "pressure_hpa": getattr(row, "pressure_hpa", None),
+            "soil_moisture_pct": getattr(row, "soil_moisture_pct", None),
+            "battery_voltage": getattr(row, "battery_voltage", None),
             "distance_cm": distance_cm,
+            "ultrasonic_sensor_model": getattr(row, "ultrasonic_sensor_model", None),
             "accel_x": getattr(row, "accel_x", None),
             "accel_y": getattr(row, "accel_y", None),
             "accel_z": getattr(row, "accel_z", None),
@@ -373,8 +412,19 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "movement_anomaly_score": getattr(row, "movement_anomaly_score", None),
             "possible_impact": bool(getattr(row, "possible_impact", False)),
             "obstacle_detected": getattr(row, "obstacle_detected", None),
+            "gps_accuracy_m": getattr(row, "gps_accuracy_m", None),
+            "gps_satellites": getattr(row, "gps_satellites", None),
         },
-        terrain={"latitude": getattr(row, "latitude", None), "longitude": getattr(row, "longitude", None)},
+        soil={
+            "source": "sensor" if getattr(row, "soil_moisture_pct", None) is not None else "unavailable",
+            "moisture_pct": getattr(row, "soil_moisture_pct", None),
+        },
+        terrain={
+            "latitude": getattr(row, "latitude", None),
+            "longitude": getattr(row, "longitude", None),
+            "gps_accuracy_m": getattr(row, "gps_accuracy_m", None),
+            "gps_satellites": getattr(row, "gps_satellites", None),
+        },
     )
 
 
@@ -388,6 +438,10 @@ def apply_risk_context(payload: dict[str, Any], context: RiskContext) -> dict[st
         "temperatura_c": iot.get("temperature_c"),
         "umidade_ar": iot.get("humidity_pct"),
         "pressao_hpa": iot.get("pressure_hpa"),
+        "umidade_solo": iot.get("soil_moisture_pct"),
+        "battery_voltage": iot.get("battery_voltage"),
+        "gps_accuracy_m": iot.get("gps_accuracy_m"),
+        "gps_satellites": iot.get("gps_satellites"),
         "distancia_obstaculo": (float(iot["distance_cm"]) / 100.0) if iot.get("distance_cm") is not None else None,
         "inclinacao": iot.get("inclination_deg"),
         "acceleration_magnitude": iot.get("acceleration_magnitude"),
@@ -423,9 +477,9 @@ def build_iot_events(context: RiskContext) -> list[dict[str, Any]]:
     distance = iot.get("distance_cm")
     if distance is not None:
         if float(distance) <= settings.iot_distance_critical_cm:
-            events.append(("OBSTACLE_CRITICAL", "CRITICAL", distance, "cm", "Obstaculo em distancia critica detectado pelo JSN-SR04T."))
+            events.append(("OBSTACLE_CRITICAL", "CRITICAL", distance, "cm", "Obstaculo em distancia critica detectado pelo sensor ultrassonico."))
         elif float(distance) <= settings.iot_distance_attention_cm:
-            events.append(("OBSTACLE_NEAR", "MEDIUM", distance, "cm", "Obstaculo proximo detectado pelo JSN-SR04T."))
+            events.append(("OBSTACLE_NEAR", "MEDIUM", distance, "cm", "Obstaculo proximo detectado pelo sensor ultrassonico."))
 
     inclination = iot.get("inclination_deg")
     if inclination is not None:

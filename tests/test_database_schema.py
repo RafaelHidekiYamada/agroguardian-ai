@@ -60,7 +60,7 @@ def test_full_migration_preserves_real_legacy_snapshot(tmp_path, monkeypatch, mi
         with target.connect() as connection:
             assert connection.execute(text("SELECT COUNT(*) FROM iot_telemetry")).scalar_one() == expected_telemetry_count
             assert connection.execute(text("SELECT COUNT(*) FROM iot_devices")).scalar_one() == expected_device_count
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c5d18e7a32bf"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "8f4c2a17d9be"
             assert connection.execute(text("PRAGMA foreign_key_check")).fetchall() == []
             if migration_path == "startup":
                 assert connection.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
@@ -114,7 +114,7 @@ def test_iot_migration_upgrades_existing_legacy_telemetry(tmp_path, monkeypatch,
         # The deployment command must remain safe after startup migrations.
         command.upgrade(alembic_config, "head")
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c5d18e7a32bf"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "8f4c2a17d9be"
             upgraded = connection.execute(
                 text(
                     "SELECT iot_device_id, recorded_at, distance_cm, inclination_deg "
@@ -145,7 +145,7 @@ def test_startup_migration_initializes_supplied_database_from_any_directory(tmp_
         ensure_schema_compatibility(engine)
         ensure_schema_compatibility(engine)
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c5d18e7a32bf"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "8f4c2a17d9be"
             assert "iot_events" in inspect(connection).get_table_names()
             config = Config()
             config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "alembic"))
@@ -288,6 +288,11 @@ def test_complete_schema_and_expected_indexes(db_session):
         "distance_cm",
         "inclination_deg",
         "raw_payload_json",
+        "soil_moisture_pct",
+        "battery_voltage",
+        "ultrasonic_sensor_model",
+        "gps_accuracy_m",
+        "gps_satellites",
     }.issubset(telemetry_columns)
     assert "uq_iot_telemetry_device_sequence" in {
         index["name"] for index in inspector.get_indexes("iot_telemetry")
@@ -321,12 +326,19 @@ def test_iot_dataset_export_excludes_raw_payload_and_credentials(db_session, tmp
             temperature_c=28.5,
             humidity_pct=72.0,
             pressure_hpa=1009.0,
+            soil_moisture_pct=62.0,
+            battery_voltage=4.95,
             accel_x=0.2,
             accel_y=0.1,
             accel_z=9.8,
             acceleration_magnitude=9.8,
             distance_cm=180.0,
+            ultrasonic_sensor_model="HC-SR04",
             inclination_deg=6.0,
+            latitude=-23.455,
+            longitude=-46.533,
+            gps_accuracy_m=3.5,
+            gps_satellites=9,
             possible_impact=False,
             telemetry_age_seconds=0.0,
             telemetry_status="LIVE",
@@ -353,6 +365,9 @@ def test_iot_dataset_export_excludes_raw_payload_and_credentials(db_session, tmp
     assert "credential-that-must-not-be-exported" not in exported
     assert "temperature_c" in exported
     assert "distance_cm" in exported
+    assert "soil_moisture_pct" in exported
+    assert "ultrasonic_sensor_model" in exported
+    assert "gps_accuracy_m" in exported
 
 
 def test_seed_reuses_existing_admin_without_credentials(db_session, monkeypatch):

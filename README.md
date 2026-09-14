@@ -118,12 +118,11 @@ X-API-Key: <api_key_gerada_no_cadastro>
 ```
 
 O firmware fisico envia HTTPS para a URL publica da API, sem depender da rede
-Wi-Fi do dashboard. Ele envia BME280 (temperatura, umidade e pressao),
-JSN-SR04T (distancia em cm) e MPU-6050 (aceleracao e inclinacao). O exemplo de
-firmware fica em:
+Wi-Fi do dashboard. Ele envia BME280, MPU-6050, HC-SR04, umidade real do solo
+opcional e GPS opcional. O projeto PlatformIO integrado fica em:
 
 ```text
-firmware/esp32_agroguardian_telemetry/esp32_agroguardian_telemetry.ino
+firmware/AgroGuardian_SensorSystem
 ```
 
 Documentacao do payload:
@@ -170,6 +169,7 @@ PUT    /api/v1/admin/users/{id}/permissions
 POST   /api/v1/admin/users/{id}/reset-password
 GET    /api/v1/admin/roles
 GET    /api/v1/admin/permissions
+POST   /api/v1/admin/farms
 ```
 
 ### Dispositivos IoT e telemetria
@@ -220,11 +220,15 @@ movement_anomaly_score
 possible_impact
 ```
 
-BME280 adiciona temperatura, umidade e pressao; JSN-SR04T adiciona distancia;
-MPU-6050 adiciona aceleracao e inclinacao. Esses campos entram em
+BME280 adiciona temperatura, umidade e pressao; o sensor de solo alimenta
+diretamente `umidade_solo`; o ultrassonico adiciona distancia; MPU-6050
+adiciona aceleracao, giroscopio e inclinacao. Esses campos entram em
 `build_features`, `calculate_contextual_risk`, `build_alerts` e
 `build_structured_explanation`. A resposta de risco inclui `explainable_ai`,
 `confidence_score`, `telemetry_status` e `data_quality_status`.
+
+A leitura e confirmada no banco antes da inferencia. Reenvios identicos com o
+mesmo `sequence_number` retornam o resultado existente sem duplicar dados.
 
 ### Scores agregados
 

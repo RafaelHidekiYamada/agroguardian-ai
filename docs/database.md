@@ -240,14 +240,15 @@ Qualquer falha em uma FK, constraint ou insercao dependente executa rollback de 
 
 O schema aprovado reutiliza `iot_devices` e `iot_telemetry`, sem criar uma
 tabela paralela. A revisao Alembic `c5d18e7a32bf` adiciona os campos canonicos
-de ESP32 de forma aditiva e cria `iot_events`.
+de ESP32 e cria `iot_events`; `8f4c2a17d9be` adiciona solo, bateria, modelo do
+ultrassonico e detalhes de GPS.
 
 `iot_devices` guarda identificador, equipamento vinculado, firmware, status,
 hash bcrypt da API key, revogacao, ultimo contato e metadados. A key plaintext
 nunca e armazenada.
 
 `iot_telemetry` guarda o dispositivo/equipamento autenticado, timestamp UTC,
-recebimento, BME280, MPU-6050, JSN-SR04T, GPS opcional, qualidade, freshness,
+recebimento, BME280, MPU-6050, ultrassonico, solo, bateria, GPS opcional, qualidade, freshness,
 confianca, score, explicacao, payload redigido e referencias de predicao.
 `risk_predictions.telemetry_id`, `iot_events` e `alerts.iot_event_id` mantem a
 trilha da leitura ate a decisao e alerta.

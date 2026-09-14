@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
@@ -32,6 +33,7 @@ from .schemas import (
     IotDeviceCreate,
     IotDeviceUpdate,
     IotDeviceResponse,
+    FarmCreate,
     EquipmentCreate,
     EquipmentUpdate,
     ScenarioInput,
@@ -118,6 +120,7 @@ from .integration_hub import (
 app = FastAPI(title=settings.app_name, version=settings.model_version)
 MODEL_BUNDLE = None
 DEVICE_RATE_LIMIT: dict[str, list[float]] = {}
+logger = logging.getLogger(__name__)
 
 
 class _PayloadTooLargeError(Exception):
@@ -665,6 +668,25 @@ def _iot_device_by_reference(db: Session, reference: str) -> models.IotDevice | 
     return db.query(models.IotDevice).filter(models.IotDevice.device_id == reference).first()
 
 
+def _serialize_farm(farm: models.Farm) -> dict[str, Any]:
+    return {
+        "farm_id": farm.id,
+        "farm_name": farm.name,
+        "client_id": farm.client_id,
+        "client_name": getattr(getattr(farm, "client", None), "name", None),
+        "region": farm.region,
+        "latitude": farm.latitude,
+        "longitude": farm.longitude,
+        "municipality": farm.municipality,
+        "state": farm.state,
+        "country": farm.country,
+        "total_area_ha": farm.total_area_ha,
+        "cultivated_area_ha": farm.cultivated_area_ha,
+        "main_crop": farm.main_crop,
+        "status": farm.status,
+    }
+
+
 def _serialize_equipment(equipment: models.Equipment) -> dict[str, Any]:
     farm = getattr(equipment, "farm", None)
     return {
@@ -706,6 +728,8 @@ def _serialize_iot_telemetry(row: models.IotTelemetry) -> dict[str, Any]:
         "humidity_pct": row.humidity_pct,
         "pressure_hpa": row.pressure_hpa,
         "altitude_m": row.altitude_m,
+        "soil_moisture_pct": row.soil_moisture_pct,
+        "battery_voltage": row.battery_voltage,
         "accel_x": row.accel_x,
         "accel_y": row.accel_y,
         "accel_z": row.accel_z,
@@ -722,9 +746,12 @@ def _serialize_iot_telemetry(row: models.IotTelemetry) -> dict[str, Any]:
         "obstacle_detected": row.obstacle_detected,
         "obstacle_distance_cm": row.obstacle_distance_cm,
         "distance_cm": row.distance_cm if row.distance_cm is not None else row.obstacle_distance_cm,
+        "ultrasonic_sensor_model": row.ultrasonic_sensor_model,
         "inclination_deg": row.inclination_deg if row.inclination_deg is not None else row.max_tilt_angle,
         "latitude": row.latitude,
         "longitude": row.longitude,
+        "gps_accuracy_m": row.gps_accuracy_m,
+        "gps_satellites": row.gps_satellites,
         "telemetry_age_seconds": age_seconds,
         "telemetry_status": status,
         "data_quality_status": row.data_quality_status,
@@ -738,6 +765,12 @@ def _serialize_iot_telemetry(row: models.IotTelemetry) -> dict[str, Any]:
             "temperature_c": row.temperature_c,
             "humidity_pct": row.humidity_pct,
             "pressure_hpa": row.pressure_hpa,
+            "altitude_m": row.altitude_m,
+        },
+        "ultrasonic": {
+            "sensor_model": row.ultrasonic_sensor_model,
+            "distance_cm": row.distance_cm if row.distance_cm is not None else row.obstacle_distance_cm,
+            "detected": row.obstacle_detected,
         },
         "jsn_sr04t": {
             "distance_cm": row.distance_cm if row.distance_cm is not None else row.obstacle_distance_cm,
@@ -746,8 +779,20 @@ def _serialize_iot_telemetry(row: models.IotTelemetry) -> dict[str, Any]:
             "accel_x": row.accel_x,
             "accel_y": row.accel_y,
             "accel_z": row.accel_z,
+            "gyro_x": row.gyro_x,
+            "gyro_y": row.gyro_y,
+            "gyro_z": row.gyro_z,
+            "pitch": row.pitch,
+            "roll": row.roll,
             "inclination_deg": row.inclination_deg if row.inclination_deg is not None else row.max_tilt_angle,
             "acceleration_magnitude": row.acceleration_magnitude,
+            "gyro_magnitude": row.gyro_magnitude,
+        },
+        "gps": {
+            "latitude": row.latitude,
+            "longitude": row.longitude,
+            "accuracy_m": row.gps_accuracy_m,
+            "satellites": row.gps_satellites,
         },
     }
 
@@ -766,7 +811,7 @@ def _recommendation_text(risk_score: float, payload: Dict[str, Any]) -> str:
     distance_cm = payload.get("obstacle_distance_cm")
     inclination = payload.get("max_tilt_angle", payload.get("inclinacao"))
     if distance_cm is not None and float(distance_cm) <= settings.iot_distance_critical_cm:
-        return "Parar o equipamento, isolar o obstaculo detectado pelo JSN-SR04T e liberar a faixa antes de retomar."
+        return "Parar o equipamento, isolar o obstaculo detectado pelo sensor ultrassonico e liberar a faixa antes de retomar."
     if inclination is not None and abs(float(inclination)) >= settings.iot_inclination_critical_deg:
         return "Pausar a operacao, reduzir carga e reposicionar o equipamento antes de retomar em terreno inclinado."
     if bool(payload.get("possible_impact")):
@@ -801,6 +846,7 @@ def _latest_usable_iot_context(
             models.IotTelemetry.data_quality_status.in_(("VALID", "PARTIAL")),
         )
         .order_by(desc(models.IotTelemetry.received_at), desc(models.IotTelemetry.id))
+        .limit(100)
         .all()
     )
     for row in rows:
@@ -912,10 +958,10 @@ def _ensure_farm_and_equipment(
         db.add(farm)
         db.flush()
     else:
-        farm.client_id = client.id
-        farm.region = region or farm.region
-        farm.latitude = latitude
-        farm.longitude = longitude
+        # Prediction coordinates describe the current equipment reading. They
+        # must not move the farm's registered reference point on every sample.
+        if farm.client_id is None:
+            farm.client_id = client.id
 
     equipment = db.query(models.Equipment).filter(models.Equipment.id == equipment_id).first()
     if not equipment:
@@ -1001,7 +1047,7 @@ def _persist_normalized_prediction(
         "temperature": "iot_bme280",
         "humidity": "iot_bme280",
         "pressure": "iot_bme280",
-        "obstacle": "iot_jsn_sr04t",
+        "obstacle": "iot_ultrasonic",
         "tilt": "iot_mpu6050",
         "movement_anomaly": "iot_mpu6050",
         "possible_impact": "iot_mpu6050",
@@ -2083,6 +2129,21 @@ def predict(
     current_user=Depends(require_permission("risk.predict")),
     db: Session = Depends(get_db),
 ):
+    # IoT provenance is server-owned. A dashboard/API caller may provide manual
+    # values, but cannot label them as authenticated device telemetry.
+    payload = payload.model_copy(
+        update={
+            "iot_used": False,
+            "telemetry_id": None,
+            "iot_snapshot": None,
+            "telemetry_age_seconds": None,
+            "telemetry_status": None,
+            "data_quality_status": None,
+            "data_quality_issues": [],
+            "missing_sensors": [],
+            "confidence_score": None,
+        }
+    )
     equipment = db.query(models.Equipment).filter(models.Equipment.id == payload.equipment_id).first()
     if equipment:
         _assert_equipment_scope(current_user, equipment)
@@ -2171,6 +2232,8 @@ def _persist_iot_telemetry(
         "humidity_pct",
         "pressure_hpa",
         "altitude_m",
+        "soil_moisture_pct",
+        "battery_voltage",
         "accel_x",
         "accel_y",
         "accel_z",
@@ -2182,9 +2245,12 @@ def _persist_iot_telemetry(
         "obstacle_detected",
         "obstacle_distance_cm",
         "distance_cm",
+        "ultrasonic_sensor_model",
         "inclination_deg",
         "latitude",
         "longitude",
+        "gps_accuracy_m",
+        "gps_satellites",
     ):
         setattr(record, field, raw_values.get(field))
 
@@ -2302,7 +2368,6 @@ def _ingest_iot_telemetry(
         raise HTTPException(status_code=413, detail="Payload de telemetria muito grande.")
 
     device = _authenticate_iot_device(db, payload, x_device_id, x_api_key)
-    _check_device_rate_limit(device.device_id)
     equipment = db.query(models.Equipment).filter(models.Equipment.id == device.equipment_id).first()
     if not equipment:
         raise HTTPException(status_code=409, detail="Equipamento vinculado ao dispositivo nao existe.")
@@ -2320,9 +2385,60 @@ def _ingest_iot_telemetry(
                 "issues": quality["data_quality_issues"],
             },
         )
+
+    normalized_raw_payload = redact_sensitive_fields(payload.model_dump(mode="json"))
+
+    def replay_existing(existing: models.IotTelemetry) -> IotTelemetryResponse:
+        stored_payload = existing.raw_payload_json
+        if stored_payload is None:
+            stored_payload = existing.raw_payload
+        if stored_payload != normalized_raw_payload:
+            raise HTTPException(
+                status_code=409,
+                detail="sequence_number ja utilizado com payload diferente.",
+            )
+
+        event_rows = (
+            db.query(models.IotEvent)
+            .filter(models.IotEvent.telemetry_id == existing.id)
+            .order_by(models.IotEvent.id)
+            .all()
+        )
+        prediction_exists = existing.risk_score is not None
+        previous_prediction = None
+        if not prediction_exists:
+            previous_prediction = _recent_iot_prediction(
+                db,
+                device.id,
+                excluding_telemetry_id=existing.id,
+            )
+        return IotTelemetryResponse(
+            status="accepted",
+            telemetry_id=existing.id,
+            equipment_id=existing.equipment_id,
+            risk_updated=prediction_exists,
+            risk_score=existing.risk_score if prediction_exists else getattr(previous_prediction, "risk_score", None),
+            risk_level=existing.risk_level if prediction_exists else getattr(previous_prediction, "risk_level", None),
+            telemetry_status=existing.telemetry_status,
+            data_quality_status=existing.data_quality_status,
+            confidence_score=existing.confidence_score,
+            recorded_at=existing.recorded_at or existing.timestamp,
+            events=[
+                {
+                    "event_type": event.event_type,
+                    "severity": event.severity,
+                    "value": event.value,
+                    "unit": event.unit,
+                    "description": event.description,
+                }
+                for event in event_rows
+            ],
+            message="Leitura duplicada ja aceita; resultado armazenado retornado.",
+        )
+
     if payload.sequence_number is not None:
         duplicate = (
-            db.query(models.IotTelemetry.id)
+            db.query(models.IotTelemetry)
             .filter(
                 models.IotTelemetry.iot_device_id == device.id,
                 models.IotTelemetry.sequence_number == payload.sequence_number,
@@ -2330,13 +2446,37 @@ def _ingest_iot_telemetry(
             .first()
         )
         if duplicate:
-            raise HTTPException(status_code=409, detail="Leitura duplicada para este sequence_number.")
+            return replay_existing(duplicate)
+
+    _check_device_rate_limit(device.device_id)
 
     try:
         telemetry_record = _persist_iot_telemetry(db, device, payload, context)
+        valid_for_prediction = context["risk_context"].is_usable
+        if valid_for_prediction:
+            device.last_seen_at = datetime.utcnow()
+            if str(device.status).upper() != "MAINTENANCE":
+                device.status = "ONLINE"
+        if payload.firmware_version:
+            device.firmware_version = payload.firmware_version
+        # The physical reading is durable before external context/model work.
+        # A later AI failure must never erase telemetry already accepted from
+        # the device.
+        db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Leitura duplicada para este sequence_number.") from exc
+        if payload.sequence_number is not None:
+            duplicate = (
+                db.query(models.IotTelemetry)
+                .filter(
+                    models.IotTelemetry.iot_device_id == device.id,
+                    models.IotTelemetry.sequence_number == payload.sequence_number,
+                )
+                .first()
+            )
+            if duplicate is not None:
+                return replay_existing(duplicate)
+        raise HTTPException(status_code=409, detail="Nao foi possivel persistir a leitura de telemetria.") from exc
 
     risk_context = replace(
         context["risk_context"],
@@ -2344,7 +2484,6 @@ def _ingest_iot_telemetry(
         received_at=normalize_timestamp(telemetry_record.received_at),
     )
     preview_events = build_iot_events(risk_context)
-    valid_for_prediction = risk_context.is_usable
     previous_prediction = _recent_iot_prediction(
         db,
         device.id,
@@ -2355,15 +2494,7 @@ def _ingest_iot_telemetry(
         or any(event["severity"] == "CRITICAL" for event in preview_events)
     )
 
-    if valid_for_prediction:
-        device.last_seen_at = datetime.utcnow()
-        if str(device.status).upper() != "MAINTENANCE":
-            device.status = "ONLINE"
-    if payload.firmware_version:
-        device.firmware_version = payload.firmware_version
-
     if not must_predict:
-        db.commit()
         return IotTelemetryResponse(
             status="accepted",
             telemetry_id=telemetry_record.id,
@@ -2382,38 +2513,59 @@ def _ingest_iot_telemetry(
             ),
         )
 
-    telemetry_input_data = context["telemetry_input"].model_dump()
-    telemetry_input_data["telemetry_id"] = telemetry_record.id
-    telemetry_input_data["iot_snapshot"] = risk_context.snapshot()
-    prediction = _predict(
-        TelemetryInput(**telemetry_input_data),
-        db,
-        commit=False,
-        iot_telemetry_record=telemetry_record,
-        audit=False,
-    )
-    event_rows = _persist_iot_events_and_alerts(
-        db,
-        device=device,
-        telemetry=telemetry_record,
-        risk_context=risk_context,
-        prediction=prediction,
-    )
-    if any(event.severity == "CRITICAL" for event in event_rows):
-        db.add(
-            models.AuditLog(
-                actor=device.device_id,
-                action="iot_critical_event",
-                payload={
-                    "device_id": device.device_id,
-                    "equipment_id": device.equipment_id,
-                    "telemetry_id": telemetry_record.id,
-                    "events": [event.event_type for event in event_rows if event.severity == "CRITICAL"],
-                    "risk_score": prediction.risk_score,
-                },
-            )
+    try:
+        telemetry_input_data = context["telemetry_input"].model_dump()
+        telemetry_input_data["telemetry_id"] = telemetry_record.id
+        telemetry_input_data["iot_snapshot"] = risk_context.snapshot()
+        prediction = _predict(
+            TelemetryInput(**telemetry_input_data),
+            db,
+            commit=False,
+            iot_telemetry_record=telemetry_record,
+            audit=False,
         )
-    db.commit()
+        event_rows = _persist_iot_events_and_alerts(
+            db,
+            device=device,
+            telemetry=telemetry_record,
+            risk_context=risk_context,
+            prediction=prediction,
+        )
+        if any(event.severity == "CRITICAL" for event in event_rows):
+            db.add(
+                models.AuditLog(
+                    actor=device.device_id,
+                    action="iot_critical_event",
+                    payload={
+                        "device_id": device.device_id,
+                        "equipment_id": device.equipment_id,
+                        "telemetry_id": telemetry_record.id,
+                        "events": [event.event_type for event in event_rows if event.severity == "CRITICAL"],
+                        "risk_score": prediction.risk_score,
+                    },
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Falha na decisao de risco para telemetria ja persistida",
+            extra={"telemetry_id": telemetry_record.id, "device_id": device.device_id},
+        )
+        persisted = db.get(models.IotTelemetry, telemetry_record.id)
+        return IotTelemetryResponse(
+            status="accepted",
+            telemetry_id=telemetry_record.id,
+            equipment_id=device.equipment_id,
+            risk_updated=False,
+            risk_score=previous_prediction.risk_score if previous_prediction else None,
+            risk_level=previous_prediction.risk_level if previous_prediction else None,
+            telemetry_status=getattr(persisted, "telemetry_status", telemetry_record.telemetry_status),
+            data_quality_status=getattr(persisted, "data_quality_status", telemetry_record.data_quality_status),
+            confidence_score=getattr(persisted, "confidence_score", telemetry_record.confidence_score),
+            recorded_at=getattr(persisted, "recorded_at", telemetry_record.recorded_at),
+            message="Telemetria armazenada; a decisao de risco falhou nesta tentativa.",
+        )
 
     return IotTelemetryResponse(
         status="accepted",
@@ -2590,6 +2742,67 @@ def dashboard_audit(
 @app.get("/api/v1/farms")
 def list_farms(db: Session = Depends(get_db)):
     return list_farms_data(db)
+
+
+@app.post("/api/v1/admin/farms")
+def admin_create_farm(
+    payload: FarmCreate,
+    current_user=Depends(require_permission("farms.create")),
+    db: Session = Depends(get_db),
+):
+    client_name = payload.client_name.strip()
+    client = (
+        db.query(models.Client)
+        .filter(models.Client.name == client_name)
+        .order_by(models.Client.id)
+        .first()
+    )
+    if client is None:
+        client = models.Client(
+            name=client_name,
+            region=payload.region,
+            client_type=models.ClientType.COMPANY,
+            status=models.ClientStatus.ACTIVE,
+        )
+        db.add(client)
+        db.flush()
+
+    duplicate = (
+        db.query(models.Farm)
+        .filter(models.Farm.client_id == client.id, models.Farm.name == payload.name.strip())
+        .first()
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="Fazenda ja cadastrada para este cliente.")
+
+    farm = models.Farm(
+        client_id=client.id,
+        name=payload.name.strip(),
+        region=payload.region.strip(),
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        municipality=payload.municipality,
+        state=payload.state,
+        country=payload.country,
+        total_area_ha=payload.total_area_ha,
+        cultivated_area_ha=payload.cultivated_area_ha,
+        main_crop=payload.main_crop,
+        notes=payload.notes,
+        status="active",
+        is_active=True,
+    )
+    db.add(farm)
+    db.flush()
+    db.add(
+        models.AuditLog(
+            actor=current_user.username,
+            action="farm_created",
+            payload={"farm_id": farm.id, "name": farm.name, "client_id": client.id},
+        )
+    )
+    db.commit()
+    db.refresh(farm)
+    return _serialize_farm(farm)
 
 
 @app.get("/api/v1/equipment")
