@@ -13,7 +13,8 @@ from sqlalchemy import desc, or_
 
 from .geointelligence import build_geo_context
 from .config import settings
-from .database import get_db
+from .database import engine, get_db
+from .migrations import ensure_schema_compatibility
 from .database_seed import seed_database_from_environment
 from .database_schemas import (
     AlertCreate as DatabaseAlertCreate,
@@ -183,6 +184,7 @@ app.add_middleware(IoTPayloadSizeMiddleware)
 @app.on_event("startup")
 def startup_event():
     global MODEL_BUNDLE
+    ensure_schema_compatibility(engine)
     MODEL_BUNDLE = load_runtime_model()
     if settings.auto_seed_demo:
         seed_database_from_environment()

@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from backend import models
@@ -19,6 +19,7 @@ from backend.config import settings
 from backend.database_schemas import AlertCreate, RecommendationCreate, RiskPredictionCreate, RiskPredictionFactorCreate
 from backend.database_services import create_risk_prediction_bundle
 from backend.iot_dataset import export_equipment_telemetry_dataset
+from backend.migrations import ensure_schema_compatibility
 
 
 LEGACY_DATABASE_SNAPSHOT = (
@@ -31,7 +32,8 @@ LEGACY_DATABASE_SNAPSHOT = (
     not LEGACY_DATABASE_SNAPSHOT.exists(),
     reason="Legacy database snapshot is only available in the local migration workspace.",
 )
-def test_full_migration_preserves_real_legacy_snapshot(tmp_path, monkeypatch):
+@pytest.mark.parametrize("migration_path", ["cli", "startup"])
+def test_full_migration_preserves_real_legacy_snapshot(tmp_path, monkeypatch, migration_path):
     database_path = tmp_path / "legacy_snapshot.db"
     shutil.copy2(LEGACY_DATABASE_SNAPSHOT, database_path)
     database_url = f"sqlite:///{database_path.as_posix()}"
@@ -40,11 +42,19 @@ def test_full_migration_preserves_real_legacy_snapshot(tmp_path, monkeypatch):
 
     source = create_engine(f"sqlite:///{LEGACY_DATABASE_SNAPSHOT.as_posix()}")
     target = create_engine(database_url)
+    if migration_path == "startup":
+        @event.listens_for(target, "connect")
+        def enable_foreign_keys(connection, _connection_record):
+            connection.execute("PRAGMA foreign_keys=ON")
+
     try:
         with source.connect() as connection:
             expected_telemetry_count = connection.execute(text("SELECT COUNT(*) FROM iot_telemetry")).scalar_one()
             expected_device_count = connection.execute(text("SELECT COUNT(*) FROM iot_devices")).scalar_one()
 
+        if migration_path == "startup":
+            ensure_schema_compatibility(target)
+            ensure_schema_compatibility(target)
         command.upgrade(alembic_config, "head")
 
         with target.connect() as connection:
@@ -52,13 +62,16 @@ def test_full_migration_preserves_real_legacy_snapshot(tmp_path, monkeypatch):
             assert connection.execute(text("SELECT COUNT(*) FROM iot_devices")).scalar_one() == expected_device_count
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c5d18e7a32bf"
             assert connection.execute(text("PRAGMA foreign_key_check")).fetchall() == []
+            if migration_path == "startup":
+                assert connection.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
         command.check(alembic_config)
     finally:
         source.dispose()
         target.dispose()
 
 
-def test_iot_migration_upgrades_existing_legacy_telemetry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("migration_path", ["cli", "startup"])
+def test_iot_migration_upgrades_existing_legacy_telemetry(tmp_path, monkeypatch, migration_path):
     database_url = f"sqlite:///{(tmp_path / 'legacy_iot.db').as_posix()}"
     monkeypatch.setattr(config_module, "settings", replace(settings, database_url=database_url))
     alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
@@ -95,8 +108,13 @@ def test_iot_migration_upgrades_existing_legacy_telemetry(tmp_path, monkeypatch)
                 )
             )
 
+        if migration_path == "startup":
+            ensure_schema_compatibility(engine)
+            ensure_schema_compatibility(engine)
+        # The deployment command must remain safe after startup migrations.
         command.upgrade(alembic_config, "head")
         with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c5d18e7a32bf"
             upgraded = connection.execute(
                 text(
                     "SELECT iot_device_id, recorded_at, distance_cm, inclination_deg "
@@ -107,7 +125,53 @@ def test_iot_migration_upgrades_existing_legacy_telemetry(tmp_path, monkeypatch)
         assert upgraded.recorded_at is not None
         assert upgraded.distance_cm == 120
         assert upgraded.inclination_deg == 8
+        assert "uq_iot_telemetry_device_sequence" in {
+            index["name"] for index in inspect(engine).get_indexes("iot_telemetry")
+        }
         command.check(alembic_config)
+    finally:
+        engine.dispose()
+
+
+def test_startup_migration_initializes_supplied_database_from_any_directory(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'fresh_startup.db').as_posix()}")
+    monkeypatch.chdir(tmp_path)
+
+    def reject_logging_reconfiguration(*args, **kwargs):
+        pytest.fail("Startup migrations must preserve application logging.")
+
+    monkeypatch.setattr("logging.config.fileConfig", reject_logging_reconfiguration)
+    try:
+        ensure_schema_compatibility(engine)
+        ensure_schema_compatibility(engine)
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c5d18e7a32bf"
+            assert "iot_events" in inspect(connection).get_table_names()
+            config = Config()
+            config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "alembic"))
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            command.check(config)
+    finally:
+        engine.dispose()
+
+
+def test_startup_migration_restores_foreign_keys_after_failure(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'failed_startup.db').as_posix()}")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _connection_record):
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    def fail_upgrade(*args, **kwargs):
+        raise RuntimeError("Migration failure")
+
+    monkeypatch.setattr("backend.migrations.command.upgrade", fail_upgrade)
+    try:
+        with pytest.raises(RuntimeError, match="Migration failure"):
+            ensure_schema_compatibility(engine)
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
     finally:
         engine.dispose()
 
