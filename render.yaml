@@ -3,7 +3,7 @@ services:
     name: agroguardian-api
     runtime: python
     plan: free
-    branch: main
+    branch: Teste-ESP32
     buildCommand: pip install -r requirements.txt
     startCommand: alembic upgrade head && gunicorn -k uvicorn.workers.UvicornWorker -w 1 -b 0.0.0.0:$PORT backend.main:app
     healthCheckPath: /health
@@ -33,7 +33,7 @@ services:
     name: agroguardian-dashboard
     runtime: python
     plan: free
-    branch: main
+    branch: Teste-ESP32
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0
     envVars:
