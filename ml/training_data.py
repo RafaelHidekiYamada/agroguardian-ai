@@ -155,8 +155,7 @@ def _risk_target(row: dict[str, Any]) -> float:
     obstacle = float(row["distancia_obstaculo"])
 
     risk = (
-        0.30 * float(row["umidade_solo"])
-        + 1.05 * float(row["inclinacao"])
+        1.05 * float(row["inclinacao"])
         + 0.30 * max(0.0, 90.0 - float(row["distancia_agua"]))
         + 1.25 * float(row["velocidade"])
         + 2.15 * float(row["historico_sinistros"])
@@ -202,21 +201,12 @@ def build_real_weather_training_dataset(
             operation_type = _operation_for_weather(rng, precipitation)
             clima = _climate_from_weather(precipitation, humidity)
 
-            umidade_solo = _clamp(
-                0.42 * humidity
-                + 1.55 * float(weather["rolling_precip_7d"])
-                + 0.95 * precipitation
-                - 0.85 * max(0.0, temperature - 30.0)
-                + rng.normal(0, 5),
-                5.0,
-                100.0,
-            )
             inclinacao = _clamp(float(region["slope_mean"]) + rng.normal(0, 3.2), 0.0, 28.0)
             distancia_agua = _clamp(float(region["water_distance_mean"]) + rng.normal(0, 85), 5.0, 650.0)
             velocidade_base = 12.0 if operation_type == "campo" else 19.0 if operation_type == "transporte" else 8.0
             velocidade = _clamp(velocidade_base + rng.normal(0, 4.5) - min(5.0, precipitation * 0.12), 0.0, 35.0)
             historico = _clamp(float(region["incident_bias"]) + rng.poisson(1.1 if precipitation >= 10 else 0.45), 0.0, 18.0)
-            solo_instavel = int(umidade_solo >= 78 and (precipitation >= 5 or inclinacao >= 12))
+            solo_instavel = int(precipitation >= 10 and inclinacao >= 10)
             distancia_obstaculo = _clamp(rng.lognormal(mean=2.0, sigma=0.95), 0.35, 80.0)
             gps_accuracy_m = _clamp(rng.lognormal(mean=1.6, sigma=0.55), 0.6, 35.0)
 
@@ -227,7 +217,6 @@ def build_real_weather_training_dataset(
                 "longitude": weather["longitude"],
                 "operation_type": operation_type,
                 "clima": clima,
-                "umidade_solo": round(float(umidade_solo), 2),
                 "inclinacao": round(float(inclinacao), 2),
                 "distancia_agua": round(float(distancia_agua), 2),
                 "velocidade": round(float(velocidade), 2),

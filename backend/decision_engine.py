@@ -39,7 +39,6 @@ def _interaction_risk_points(payload: Dict[str, Any], geo_context: Dict[str, Any
     velocidade = float(payload.get("velocidade", 0) or 0)
     inclinacao = float(payload.get("inclinacao", 0) or 0)
     chuva_mm = float(payload.get("chuva_mm", 0) or 0)
-    umidade_solo = float(payload.get("umidade_solo", 0) or 0)
     distancia_agua = float(payload.get("distancia_agua", 999999) or 999999)
     historico_sinistros = float(payload.get("historico_sinistros", 0) or 0)
     solo_instavel = int(payload.get("solo_instavel", 0) or 0)
@@ -53,12 +52,12 @@ def _interaction_risk_points(payload: Dict[str, Any], geo_context: Dict[str, Any
         points += 7.0
         reasons.append("velocidade alta combinada com inclinacao elevada")
 
-    if chuva_mm >= 20 and umidade_solo >= 75:
+    if chuva_mm >= 20:
         points += 8.0
-        reasons.append("chuva relevante sobre solo muito umido")
-    elif chuva_mm >= 10 and umidade_solo >= 65:
+        reasons.append("chuva intensa aumenta o risco de atolamento e perda de aderencia")
+    elif chuva_mm >= 10:
         points += 4.0
-        reasons.append("chuva moderada com solo ja umido")
+        reasons.append("chuva moderada reduz a aderencia do terreno")
 
     if solo_instavel == 1 and inclinacao >= 10:
         points += 6.0

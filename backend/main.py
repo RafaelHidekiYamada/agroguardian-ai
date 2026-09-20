@@ -1162,13 +1162,9 @@ def _normalize_esp_payload(payload: ESPTelemetryInput, db: Session) -> Telemetry
     ]
     inclinacao = max(inclinacoes) if inclinacoes else 0.0
 
-    umidade_solo = payload.umidade_solo
-    if umidade_solo is None:
-        umidade_solo = min(100.0, max(0.0, float(payload.umidade_ar or 65) * 0.72 + float(payload.chuva_mm or 0) * 1.6))
-
     solo_instavel = payload.solo_instavel
     if solo_instavel is None:
-        solo_instavel = int(float(umidade_solo) >= 80 and (float(payload.chuva_mm or 0) >= 5 or inclinacao >= 10))
+        solo_instavel = int(float(payload.chuva_mm or 0) >= 10 and inclinacao >= 10)
 
     historico = payload.historico_sinistros
     if historico is None:
@@ -1180,7 +1176,6 @@ def _normalize_esp_payload(payload: ESPTelemetryInput, db: Session) -> Telemetry
         region=payload.region,
         operation_type=payload.operation_type,
         clima=_infer_climate_from_esp(payload),
-        umidade_solo=float(umidade_solo),
         inclinacao=float(inclinacao),
         distancia_agua=float(payload.distancia_agua if payload.distancia_agua is not None else 999.0),
         velocidade=float(payload.velocidade or 0.0),
@@ -2618,7 +2613,6 @@ def simulate(payload: ScenarioInput, db: Session = Depends(get_db)):
     simulated["clima"] = "chuva" if payload.scenario_name else payload.clima
     simulated["chuva_mm"] = max(payload.chuva_mm, weather.get("rain_mm_1h", 0) * 4 + 10)
     simulated["velocidade"] = max(0, payload.velocidade - 2)
-    simulated["umidade_solo"] = min(100, payload.umidade_solo + 8)
 
     sim_input = TelemetryInput(**simulated)
     return _predict(sim_input, db)

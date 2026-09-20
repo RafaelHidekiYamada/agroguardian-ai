@@ -10,7 +10,6 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_PATH = MODEL_DIR / "risk_model.joblib"
 
 FEATURES = [
-    "umidade_solo",
     "inclinacao",
     "distancia_agua",
     "velocidade",
@@ -28,7 +27,6 @@ FEATURES = [
 
 def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Series]:
     rng = np.random.default_rng(seed)
-    umidade_solo = rng.uniform(10, 100, n)
     inclinacao = rng.uniform(0, 25, n)
     distancia_agua = rng.uniform(0, 250, n)
     velocidade = rng.uniform(0, 30, n)
@@ -44,7 +42,6 @@ def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Seri
     gps_accuracy_m = rng.uniform(0.8, 35, n)
 
     risco = (
-        0.32 * umidade_solo +
         1.10 * inclinacao +
         0.28 * np.maximum(0, 80 - distancia_agua) +
         1.45 * velocidade +
@@ -65,7 +62,6 @@ def _synth_dataset(n: int = 2500, seed: int = 42) -> Tuple[pd.DataFrame, pd.Seri
     risco = np.clip(risco, 0, 100)
 
     X = pd.DataFrame({
-        "umidade_solo": umidade_solo,
         "inclinacao": inclinacao,
         "distancia_agua": distancia_agua,
         "velocidade": velocidade,

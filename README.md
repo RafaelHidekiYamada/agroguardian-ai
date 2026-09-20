@@ -220,8 +220,8 @@ movement_anomaly_score
 possible_impact
 ```
 
-BME280 adiciona temperatura, umidade e pressao; o sensor de solo alimenta
-diretamente `umidade_solo`; o ultrassonico adiciona distancia; MPU-6050
+BME280 adiciona temperatura, umidade e pressao; a umidade do solo nao entra no
+calculo de risco (nao ha sensor de solo no projeto); o ultrassonico adiciona distancia; MPU-6050
 adiciona aceleracao, giroscopio e inclinacao. Esses campos entram em
 `build_features`, `calculate_contextual_risk`, `build_alerts` e
 `build_structured_explanation`. A resposta de risco inclui `explainable_ai`,

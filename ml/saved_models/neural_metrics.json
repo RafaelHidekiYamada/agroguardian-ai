@@ -1,12 +1,11 @@
 {
   "model_name": "mlp_regressor",
-  "mae": 1.5893,
-  "rmse": 2.1314,
-  "r2": 0.9889,
+  "mae": 1.1367,
+  "rmse": 1.5528,
+  "r2": 0.9857,
   "n_train": 4093,
   "n_test": 1024,
   "features": [
-    "umidade_solo",
     "inclinacao",
     "distancia_agua",
     "velocidade",
@@ -23,5 +22,5 @@
   ],
   "training_dataset": "nasa_power_agroguardian_training",
   "training_source": "NASA POWER Daily API",
-  "training_path": "C:\\Users\\rafae\\Desktop\\agroguardian_ai\\ml\\data\\nasa_power_agroguardian_training.csv"
+  "training_path": "C:\\Users\\andmo\\OneDrive\\Desktop\\agroguardian_ai (3)\\agroguardian_ai\\ml\\data\\nasa_power_agroguardian_training.csv"
 }

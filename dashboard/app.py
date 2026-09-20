@@ -899,7 +899,6 @@ def render_factor_cards(metrics_data: Any) -> None:
             "velocidade": 23.49,
             "chuva_mm": 21.35,
             "solo_instavel": 13.25,
-            "umidade_solo": 11.95,
             "inclinacao": 11.42,
         }
 
@@ -907,7 +906,6 @@ def render_factor_cards(metrics_data: Any) -> None:
         "velocidade": "Velocidade",
         "chuva_mm": "Chuva intensa",
         "solo_instavel": "Solo instavel",
-        "umidade_solo": "Solo umido",
         "inclinacao": "Inclinacao",
         "historico_sinistros": "Historico",
         "distancia_agua": "Proximidade da agua",
@@ -1494,7 +1492,6 @@ with tab_map["Operação em tempo real"]:
         ["campo", "transporte", "proximidade_agua"],
     )
 
-    umidade_solo = st.sidebar.slider("Umidade do solo", 0, 100, 80)
     inclinacao = st.sidebar.slider("Inclinação do terreno", 0, 90, 12)
     distancia_agua = st.sidebar.slider("Distância da água (manual / fallback)", 0, 1000, 20)
     st.sidebar.caption("A análise principal usa a distância geográfica calculada pelas coordenadas.")
@@ -1525,7 +1522,6 @@ with tab_map["Operação em tempo real"]:
             "region": region,
             "operation_type": operation_type,
             "clima": clima_base,
-            "umidade_solo": int(umidade_solo),
             "inclinacao": int(inclinacao),
             "distancia_agua": int(distancia_agua),
             "velocidade": int(velocidade),
@@ -1559,7 +1555,6 @@ with tab_map["Operação em tempo real"]:
             esp_inclination = st.number_input("MPU inclinacao graus", min_value=0.0, max_value=180.0, value=float(inclinacao), step=0.1, key="esp_inclination")
         with esp_col3:
             esp_distance = st.number_input("HC-SR04 distancia cm", min_value=0.0, value=185.0, step=1.0, key="esp_distance")
-            esp_soil_moisture = st.number_input("Umidade do solo %", min_value=0.0, max_value=100.0, value=55.0, step=0.5, key="esp_soil_moisture")
             esp_battery_voltage = st.number_input("Bateria V", min_value=0.0, max_value=30.0, value=5.0, step=0.1, key="esp_battery_voltage")
             esp_send = st.button("Enviar leitura ESP32", key="btn_send_esp")
 
@@ -1572,7 +1567,6 @@ with tab_map["Operação em tempo real"]:
                 "sequence_number": sequence,
                 "operation_type": operation_type,
                 "firmware_version": "dashboard-physical-test",
-                "soil_moisture_pct": float(esp_soil_moisture),
                 "battery_voltage": float(esp_battery_voltage),
                 "bme280": {
                     "temperature_c": float(esp_temperature),
@@ -1820,11 +1814,10 @@ if "Telemetria" in tab_map:
                 ultrasonic_model = latest.get("ultrasonic_sensor_model") or "Ultrassonico"
                 s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
 
-                e1, e2, e3, e4 = st.columns(4)
-                e1.metric("Umidade do solo", format_measurement(latest.get("soil_moisture_pct"), "%"))
-                e2.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
-                e3.metric("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"))
-                e4.metric("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D")
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
+                e2.metric("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"))
+                e3.metric("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D")
 
                 o1, o2, o3 = st.columns(3)
                 o1.metric("Qualidade", latest.get("data_quality_status", "-"))
@@ -1862,7 +1855,7 @@ if "Telemetria" in tab_map:
                     time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
                     bme_cols = [
                         col
-                        for col in ["temperature_c", "humidity_pct", "pressure_hpa", "soil_moisture_pct", "battery_voltage"]
+                        for col in ["temperature_c", "humidity_pct", "pressure_hpa", "battery_voltage"]
                         if col in hist_df.columns
                     ]
                     motion_cols = [
@@ -1880,7 +1873,7 @@ if "Telemetria" in tab_map:
                         if col in hist_df.columns
                     ]
                     if time_col in hist_df.columns and bme_cols:
-                        st.caption("Ambiente, solo e bateria no periodo")
+                        st.caption("Ambiente e bateria no periodo")
                         st.line_chart(hist_df[[time_col, *bme_cols]].set_index(time_col)[bme_cols])
                     if time_col in hist_df.columns and motion_cols:
                         st.caption("Ultrassonico, MPU-6050 e risco no periodo")
@@ -2379,7 +2372,6 @@ with tab_map["Simulador de risco"]:
         )
 
         sim_clima = st.selectbox("Clima base", ["sol", "nublado", "chuva"], key="sim_clima")
-        sim_umidade_solo = st.slider("Umidade do solo", 0, 100, 80, key="sim_umidade_solo")
         sim_inclinacao = st.slider("Inclinação", 0, 90, 12, key="sim_inclinacao")
         sim_distancia_agua = st.slider("Distância da água", 0, 1000, 20, key="sim_distancia_agua")
         sim_velocidade = st.slider("Velocidade", 0, 200, 15, key="sim_velocidade")
@@ -2424,7 +2416,6 @@ with tab_map["Simulador de risco"]:
             )
 
         sim2_clima = st.selectbox("Clima simulado", ["sol", "nublado", "chuva"], index=2, key="sim2_clima")
-        sim2_umidade_solo = st.slider("Umidade do solo simulada", 0, 100, 90, key="sim2_umidade_solo")
         sim2_inclinacao = st.slider("Inclinação simulada", 0, 90, 18, key="sim2_inclinacao")
         sim2_distancia_agua = st.slider("Distância da água simulada", 0, 1000, 10, key="sim2_distancia_agua")
         sim2_velocidade = st.slider("Velocidade simulada", 0, 200, 20, key="sim2_velocidade")
@@ -2441,7 +2432,6 @@ with tab_map["Simulador de risco"]:
             "region": sim_region,
             "operation_type": sim_operation_type,
             "clima": sim_clima,
-            "umidade_solo": int(sim_umidade_solo),
             "inclinacao": int(sim_inclinacao),
             "distancia_agua": int(sim_distancia_agua),
             "velocidade": int(sim_velocidade),
@@ -2459,7 +2449,6 @@ with tab_map["Simulador de risco"]:
             "region": sim_region,
             "operation_type": sim_operation_type,
             "clima": sim2_clima,
-            "umidade_solo": int(sim2_umidade_solo),
             "inclinacao": int(sim2_inclinacao),
             "distancia_agua": int(sim2_distancia_agua),
             "velocidade": int(sim2_velocidade),

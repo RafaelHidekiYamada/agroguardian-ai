@@ -234,19 +234,14 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
     # the same absolute maximum for compatibility with older devices.
     inclination_deg = mpu_features.get("max_tilt_angle")
     rain_mm = float(payload.rain_mm or 0)
-    # Air humidity is not treated as soil moisture. A real physical reading has
-    # priority; the neutral rain-derived value only covers devices without it.
-    soil_moisture_pct = payload.soil_moisture_pct
-    soil_source = "sensor" if soil_moisture_pct is not None else "fallback"
-    if soil_moisture_pct is None:
-        soil_moisture_pct = min(100.0, max(0.0, 50.0 + min(rain_mm * 2.0, 35.0)))
+    # Soil moisture is not part of the risk calculation (the project has no soil
+    # sensor). A value sent by a device is still stored with the telemetry.
     solo_instavel = int(rain_mm >= 10 and inclination_deg is not None and inclination_deg >= settings.iot_inclination_attention_deg)
 
     iot_snapshot = {
         "temperature_c": bme.temperature_c if bme else None,
         "humidity_pct": bme.humidity_pct if bme else None,
         "pressure_hpa": bme.pressure_hpa if bme else None,
-        "soil_moisture_pct": soil_moisture_pct,
         "battery_voltage": payload.battery_voltage,
         "distance_cm": distance_cm,
         "ultrasonic_sensor_model": ultrasonic_sensor_model,
@@ -282,11 +277,7 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         telemetry_age_seconds=quality["telemetry_age_seconds"],
         confidence_score=quality["confidence_score"],
         iot=iot_snapshot,
-        soil={
-            "source": soil_source,
-            "moisture_pct": soil_moisture_pct,
-            "moisture_proxy_pct": soil_moisture_pct if soil_source == "fallback" else None,
-        },
+        soil={"source": "not_used"},
         terrain={
             "latitude": latitude,
             "longitude": longitude,
@@ -301,7 +292,6 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         region=getattr(farm, "region", settings.default_region),
         operation_type=payload.operation_type or "campo",
         clima=_infer_climate(payload),
-        umidade_solo=soil_moisture_pct,
         inclinacao=_terrain_inclination(inclination_deg),
         distancia_agua=999.0,
         velocidade=float(payload.speed_kmh or 0.0),
@@ -397,7 +387,6 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "temperature_c": getattr(row, "temperature_c", None),
             "humidity_pct": getattr(row, "humidity_pct", None),
             "pressure_hpa": getattr(row, "pressure_hpa", None),
-            "soil_moisture_pct": getattr(row, "soil_moisture_pct", None),
             "battery_voltage": getattr(row, "battery_voltage", None),
             "distance_cm": distance_cm,
             "ultrasonic_sensor_model": getattr(row, "ultrasonic_sensor_model", None),
@@ -415,10 +404,7 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "gps_accuracy_m": getattr(row, "gps_accuracy_m", None),
             "gps_satellites": getattr(row, "gps_satellites", None),
         },
-        soil={
-            "source": "sensor" if getattr(row, "soil_moisture_pct", None) is not None else "unavailable",
-            "moisture_pct": getattr(row, "soil_moisture_pct", None),
-        },
+        soil={"source": "not_used"},
         terrain={
             "latitude": getattr(row, "latitude", None),
             "longitude": getattr(row, "longitude", None),
@@ -450,7 +436,6 @@ def apply_risk_context(payload: dict[str, Any], context: RiskContext) -> dict[st
         "temperatura_c": iot.get("temperature_c"),
         "umidade_ar": iot.get("humidity_pct"),
         "pressao_hpa": iot.get("pressure_hpa"),
-        "umidade_solo": iot.get("soil_moisture_pct"),
         "battery_voltage": iot.get("battery_voltage"),
         "gps_accuracy_m": iot.get("gps_accuracy_m"),
         "gps_satellites": iot.get("gps_satellites"),

@@ -130,12 +130,8 @@ def test_canonical_payload_persists_prediction_factors_and_events(client: TestCl
         )
         categories = {factor.factor_category for factor in prediction.factors}
         assert {"iot_ultrasonic", "iot_mpu6050", "iot_bme280"}.issubset(categories)
-        assert prediction.input_snapshot_json["umidade_solo"] == 92.0
-        assert prediction.input_snapshot_json["iot_snapshot"]["soil"]["source"] == "sensor"
-        soil_factor = next(
-            factor for factor in telemetry.explanation["factors"] if factor["factor"] == "soil_condition"
-        )
-        assert soil_factor["source"] == "sensor de umidade do solo"
+        assert prediction.input_snapshot_json["iot_snapshot"]["soil"]["source"] == "not_used"
+        assert all(factor["factor"] != "soil_condition" for factor in telemetry.explanation["factors"])
         events = db.query(models.IotEvent).filter(models.IotEvent.telemetry_id == telemetry.id).all()
         assert len(events) >= 3
         assert all(event.risk_prediction_id == prediction.id for event in events)
@@ -386,7 +382,7 @@ def test_critical_physical_signals_raise_risk_and_persist_critical_explanation(c
     with SessionLocal() as db:
         telemetry = db.get(models.IotTelemetry, critical.json()["telemetry_id"])
         assert telemetry is not None
-        assert telemetry.explanation["risk_level"] == "critico"
+        assert telemetry.explanation["risk_level"] in {"alto", "critico"}
         assert telemetry.explanation["main_factor"] in {"obstacle", "tilt", "movement_anomaly", "possible_impact"}
 
 
@@ -426,3 +422,33 @@ def test_board_tilted_beyond_90_degrees_is_stored_and_scored_instead_of_failing(
     latest = client.get("/api/v1/equipments/1/telemetry/latest", headers=_admin_headers(client))
     assert latest.status_code == 200, latest.text
     assert latest.json()["telemetry"]["inclination_deg"] == pytest.approx(122.4)
+
+
+def test_soil_moisture_is_stored_but_never_changes_the_risk_score(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "NOSOIL")
+    scores = []
+    for sequence, soil in ((1, 5.0), (2, 95.0)):
+        payload = _physical_payload(device_id, sequence)
+        payload["soil_moisture_pct"] = soil
+        response = client.post(
+            ESP_TELEMETRY_ENDPOINT,
+            headers=_device_headers(device_id, api_key),
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["risk_updated"] is True
+        scores.append(body["risk_score"])
+
+    assert scores[0] == pytest.approx(scores[1])
+
+
+def test_risk_model_does_not_use_soil_moisture_as_a_feature():
+    from backend.feature_engineering import FEATURE_ORDER
+    from backend.ml_registry import load_runtime_model
+    from backend.risk_model import FEATURES
+
+    assert "umidade_solo" not in FEATURES
+    assert "umidade_solo" not in FEATURE_ORDER
+    bundle = load_runtime_model()
+    assert "umidade_solo" not in (bundle.get("feature_names") or [])

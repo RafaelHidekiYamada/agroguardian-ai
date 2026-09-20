@@ -60,7 +60,8 @@ class TelemetryInput(BaseModel):
     region: str = Field(default="Guarulhos - SP")
     operation_type: str = Field(default="campo")
     clima: str = Field(default="chuva")
-    umidade_solo: float = Field(ge=0, le=100)
+    # Legado: mantido por compatibilidade da API/banco. Nao entra no calculo de risco.
+    umidade_solo: float = Field(default=0.0, ge=0, le=100)
     inclinacao: float = Field(ge=0, le=90)
     distancia_agua: float = Field(ge=0, le=10000)
     velocidade: float = Field(ge=0, le=200)

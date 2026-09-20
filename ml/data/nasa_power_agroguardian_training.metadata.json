@@ -72,7 +72,6 @@
   ],
   "rows": 5117,
   "features": [
-    "umidade_solo",
     "inclinacao",
     "distancia_agua",
     "velocidade",
@@ -88,5 +87,5 @@
     "gps_accuracy_m"
   ],
   "target": "risk_score",
-  "labeling_note": "Meteorologia historica real da NASA POWER. O target de risco e heuristico-operacional ate haver base real de sinistros/equipamentos."
+  "labeling_note": "Meteorologia historica real da NASA POWER. O target de risco e heuristico-operacional ate haver base real de sinistros/equipamentos. A umidade do solo foi removida do dataset e do alvo (sem sensor real)."
 }
