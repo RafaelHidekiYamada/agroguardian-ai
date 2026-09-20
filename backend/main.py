@@ -98,6 +98,7 @@ from .security import (
     create_access_token,
     get_current_user,
     normalize_role,
+    require_any_permission,
     require_permission,
     require_roles,
 )
@@ -2740,7 +2741,10 @@ def dashboard_audit(
 
 
 @app.get("/api/v1/farms")
-def list_farms(db: Session = Depends(get_db)):
+def list_farms(
+    current_user=Depends(require_any_permission("farms.view", "equipments.view")),
+    db: Session = Depends(get_db),
+):
     return list_farms_data(db)
 
 

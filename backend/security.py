@@ -271,6 +271,18 @@ def require_permission(permission_code: str):
     return dependency
 
 
+def require_any_permission(*permission_codes: str):
+    def dependency(current_user=Depends(get_current_user)):
+        if not set(permission_codes) & set(get_user_permissions(current_user)):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Voce nao tem permissao para acessar este recurso.",
+            )
+        return current_user
+
+    return dependency
+
+
 def authenticate_user(db: Session, username_or_email: str, password: str):
     user = (
         db.query(models.User)

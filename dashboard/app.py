@@ -769,6 +769,10 @@ def format_currency(value: Any) -> str:
     return f"R$ {number:,.0f}".replace(",", ".")
 
 
+# Premissa ilustrativa usada apenas nas estimativas de impacto da Visao Geral.
+AVERAGE_CLAIM_COST_BRL = 32800
+
+
 def render_sidebar_brand() -> None:
     st.sidebar.markdown(
         """
@@ -946,20 +950,20 @@ def render_overview_dashboard() -> None:
     high_risk = safe_int(summary.get("high_risk_predictions"))
     medium_risk = safe_int(summary.get("medium_risk_predictions"))
     low_risk = safe_int(summary.get("low_risk_predictions"))
-    avoided_claims = max(0, high_risk * 2 + medium_risk)
-    estimated_savings = avoided_claims * 32800
+    potential_claims = max(0, high_risk * 2 + medium_risk)
+    estimated_savings = potential_claims * AVERAGE_CLAIM_COST_BRL
 
     kpi_cols = st.columns(5)
     with kpi_cols[0]:
-        render_metric_card("Total de previsoes", format_compact_number(total_predictions), "vs periodo anterior", "+18.6%")
+        render_metric_card("Total de previsoes", format_compact_number(total_predictions), "acumuladas")
     with kpi_cols[1]:
         render_metric_card("Risco medio", f"{avg_risk:.0f}/100", "nivel operacional", "medio" if avg_risk >= 41 else "baixo", "warn")
     with kpi_cols[2]:
-        render_metric_card("Alertas criticos", format_compact_number(high_risk), "alto risco detectado", "+27.4%", "hot")
+        render_metric_card("Alertas criticos", format_compact_number(high_risk), "alto risco detectado", "", "hot")
     with kpi_cols[3]:
-        render_metric_card("Sinistros evitados", format_compact_number(avoided_claims), "estimativa preventiva", "+35.2%")
+        render_metric_card("Sinistros potenciais", format_compact_number(potential_claims), "estimativa ilustrativa")
     with kpi_cols[4]:
-        render_metric_card("Economia estimada", format_currency(estimated_savings), "impacto financeiro", "+41.8%")
+        render_metric_card("Economia estimada", format_currency(estimated_savings), "estimativa ilustrativa")
 
     left, middle, right = st.columns([1.08, 1.62, 0.92])
 
@@ -1066,24 +1070,16 @@ def render_overview_dashboard() -> None:
             st.markdown('<div class="ag-chip-row"><span class="ag-chip">Baixo risco</span><span class="ag-chip warn">Medio risco</span><span class="ag-chip hot">Alto risco</span></div>', unsafe_allow_html=True)
             end_section()
 
-        begin_section("Sinistros potencialmente evitados")
-        claim_df = any_to_dataframe(trends_data if ok_trends else [])
-        if not claim_df.empty:
-            date_col = "date" if "date" in claim_df.columns else claim_df.columns[0]
-            numeric_cols = claim_df.select_dtypes(include=["number"]).columns.tolist()
-            risk_col = "avg_risk" if "avg_risk" in claim_df.columns else numeric_cols[0] if numeric_cols else None
-            if risk_col:
-                claim_plot = claim_df[[date_col, risk_col]].copy()
-                claim_plot.columns = ["Data", "Evitados"]
-                claim_plot["Evitados"] = (claim_plot["Evitados"].astype(float) * 1.8).round(0)
-                area = (
-                    alt.Chart(claim_plot)
-                    .mark_area(line={"color": "#8cffb2"}, color="#31e981", opacity=0.26)
-                    .encode(x=alt.X("Data:N", title=None), y=alt.Y("Evitados:Q", title=None), tooltip=["Data:N", "Evitados:Q"])
-                    .properties(height=210)
-                )
-                st.altair_chart(area, use_container_width=True)
-        st.markdown(f'<div class="ag-chip-row"><span class="ag-chip">Economia estimada</span><span class="ag-chip">{format_currency(estimated_savings)}</span><span class="ag-chip">+41.8%</span></div>', unsafe_allow_html=True)
+        begin_section("Estimativa de impacto")
+        st.markdown(
+            f'<div class="ag-chip-row"><span class="ag-chip">Economia estimada</span><span class="ag-chip">{format_currency(estimated_savings)}</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Estimativa ilustrativa, nao e resultado medido. Premissas: cada previsao de alto risco "
+            f"equivale a 2 sinistros potenciais, cada previsao de medio risco a 1, e o custo medio "
+            f"por sinistro e {format_currency(AVERAGE_CLAIM_COST_BRL)}."
+        )
         end_section()
 
     with right:
