@@ -111,6 +111,20 @@ def _ultrasonic_sensor(payload: IotTelemetryInput):
     return payload.ultrasonic or payload.jsn_sr04t or payload.obstacle
 
 
+def _ultrasonic_no_echo(sensor: Any) -> bool:
+    """True when the ultrasonic sensor reported a timeout (no echo) and no distance.
+
+    A timeout means nothing was detected within the sensor range, so it is treated
+    as "out of range" (no obstacle) instead of a fault that would suspend the risk
+    calculation. A distance reading always takes precedence.
+    """
+    return (
+        sensor is not None
+        and bool(getattr(sensor, "timeout", False))
+        and getattr(sensor, "distance_cm", None) is None
+    )
+
+
 def _ultrasonic_sensor_model(payload: IotTelemetryInput, sensor: Any) -> str | None:
     explicit_model = getattr(sensor, "sensor_model", None) if sensor is not None else None
     if explicit_model:
@@ -150,10 +164,12 @@ def evaluate_iot_quality(
         missing_sensors.append("BME280")
     if _sensor_missing(payload.mpu6050, ("accel_x", "accel_y", "accel_z", "inclination_deg", "pitch", "roll")):
         missing_sensors.append("MPU6050")
-    if _sensor_missing(ultrasonic, ("distance_cm",)):
+    no_echo = _ultrasonic_no_echo(ultrasonic)
+    notes: list[str] = []
+    if _sensor_missing(ultrasonic, ("distance_cm",)) and not no_echo:
         missing_sensors.append("ULTRASONIC")
-    if ultrasonic is not None and bool(getattr(ultrasonic, "timeout", False)):
-        issues.append("sensor ultrassonico sem leitura por timeout")
+    if no_echo:
+        notes.append("ultrassonico sem eco (timeout): nenhum obstaculo dentro do alcance")
     if ultrasonic is not None and bool(getattr(ultrasonic, "out_of_range", False)):
         issues.append("sensor ultrassonico fora de alcance")
 
@@ -169,7 +185,7 @@ def evaluate_iot_quality(
             "telemetry_status": "SUSPECT",
             "telemetry_age_seconds": 0.0,
             "missing_sensors": missing_sensors,
-            "data_quality_issues": issues + ["timestamp acima da tolerancia futura"],
+            "data_quality_issues": issues + notes + ["timestamp acima da tolerancia futura"],
             "confidence_score": 0.0,
         }
 
@@ -177,7 +193,9 @@ def evaluate_iot_quality(
     if accel is not None and float(accel) > settings.iot_acceleration_suspect_m_s2:
         issues.append("aceleracao fora do padrao esperado do MPU6050")
 
-    if len(missing_sensors) == 3:
+    # A no-echo ultrasonic reading carries no measurement: it must not make an
+    # otherwise empty payload look usable.
+    if len(missing_sensors) + (1 if no_echo else 0) == 3:
         status = "INVALID"
         issues.append("nenhum sensor utilizavel enviado")
     elif issues:
@@ -194,7 +212,7 @@ def evaluate_iot_quality(
         "telemetry_status": freshness,
         "telemetry_age_seconds": round(age, 2),
         "missing_sensors": missing_sensors,
-        "data_quality_issues": issues,
+        "data_quality_issues": issues + notes,
         "confidence_score": round(confidence_score, 2),
     }
 
@@ -227,6 +245,8 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
     obstacle_detected = getattr(ultrasonic, "detected", None) if ultrasonic else None
     if obstacle_detected is None and distance_cm is not None:
         obstacle_detected = float(distance_cm) <= settings.iot_distance_attention_cm
+    elif obstacle_detected is None and _ultrasonic_no_echo(ultrasonic):
+        obstacle_detected = False
 
     latitude = gps.latitude if gps and gps.latitude is not None else getattr(farm, "latitude", None)
     longitude = gps.longitude if gps and gps.longitude is not None else getattr(farm, "longitude", None)

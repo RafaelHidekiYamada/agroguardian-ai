@@ -359,7 +359,13 @@ def test_jsn_sr04t_thresholds_and_status_flags():
         equipment,
         farm,
     )
-    assert timeout["quality"]["data_quality_status"] == "SUSPECT"
+    # A timeout (no echo) means nothing within range: the reading stays usable.
+    assert timeout["quality"]["data_quality_status"] == "VALID"
+    assert "ULTRASONIC" not in timeout["quality"]["missing_sensors"]
+    assert any("sem eco" in note for note in timeout["quality"]["data_quality_issues"])
+    assert timeout["risk_context"].iot["obstacle_detected"] is False
+    assert timeout["risk_context"].is_usable
+    # An out-of-range echo stays suspect: it may be closer than the sensor minimum.
     assert out_of_range["quality"]["data_quality_status"] == "SUSPECT"
 
 
@@ -452,3 +458,39 @@ def test_risk_model_does_not_use_soil_moisture_as_a_feature():
     assert "umidade_solo" not in FEATURE_ORDER
     bundle = load_runtime_model()
     assert "umidade_solo" not in (bundle.get("feature_names") or [])
+
+
+def test_ultrasonic_timeout_does_not_suspend_the_risk_calculation(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "NOECHO")
+    payload = _physical_payload(device_id, 1)
+    payload["ultrasonic"] = {"sensor_model": "HC-SR04", "timeout": True, "out_of_range": False}
+
+    response = client.post(
+        ESP_TELEMETRY_ENDPOINT,
+        headers=_device_headers(device_id, api_key),
+        json=payload,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["risk_updated"] is True
+    assert body["data_quality_status"] == "VALID"
+    assert body["risk_level"] == "Baixo"
+
+
+def test_payload_with_only_an_ultrasonic_timeout_is_still_rejected(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "ONLYNOECHO")
+    payload = {
+        "device_id": device_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "sequence_number": 1,
+        "ultrasonic": {"sensor_model": "HC-SR04", "timeout": True},
+    }
+
+    response = client.post(
+        ESP_TELEMETRY_ENDPOINT,
+        headers=_device_headers(device_id, api_key),
+        json=payload,
+    )
+
+    assert response.status_code == 422, response.text

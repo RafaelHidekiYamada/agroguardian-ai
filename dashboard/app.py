@@ -1812,7 +1812,10 @@ if "Telemetria" in tab_map:
                 s1.metric("MPU movimento", format_measurement(latest.get("movement_anomaly_score"), "score"))
                 s2.metric("MPU impacto", "SIM" if latest.get("possible_impact") else "NAO")
                 ultrasonic_model = latest.get("ultrasonic_sensor_model") or "Ultrassonico"
-                s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
+                if latest.get("distance_cm") is None and latest.get("obstacle_detected") is False:
+                    s3.metric(f"{ultrasonic_model} distancia", "Fora de alcance")
+                else:
+                    s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
 
                 e1, e2, e3 = st.columns(3)
                 e1.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
@@ -1823,7 +1826,7 @@ if "Telemetria" in tab_map:
                 o1.metric("Qualidade", latest.get("data_quality_status", "-"))
                 o2.metric("Confianca", format_measurement(latest.get("confidence_score"), "%"))
                 obstacle_status = "Detectado" if latest.get("obstacle_detected") else "Sem alerta"
-                if latest.get("distance_cm") is None:
+                if latest.get("distance_cm") is None and latest.get("obstacle_detected") is not False:
                     obstacle_status = "N/D"
                 o3.metric("Obstaculo ultrassonico", obstacle_status)
 
