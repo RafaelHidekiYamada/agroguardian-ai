@@ -91,6 +91,8 @@
 
 **Preparação:** aba Telemetria → escolher o equipamento → período "Últimos 5 minutos" → marcar **Auto** com 5 segundos.
 
+> ⚠️ **Desmarque o "Auto" antes de sair desta aba.** Com o Auto ligado, o dashboard dorme e recarrega a página inteira em loop, e os botões das abas seguintes (Equipamentos, Políticas, Administração, **Simulador**, IA e ML) **param de responder** (o clique é perdido a cada recarga). Foi assim que o Simulador travou no ensaio de 20/09. Ordem segura: grave o bloco 5 e o bloco 7 com o Auto ligado e **desmarque-o** antes de cadastrar fazenda, abrir o Simulador ou mudar de aba para mostrar a IA.
+
 **Fala:**
 > "Ligo o equipamento. Aqui no monitor da placa vemos ela conectando no Wi-Fi e enviando uma leitura a cada 15 segundos. Repare na linha *status 200 / accepted*: é a nuvem confirmando que recebeu e guardou."
 
@@ -137,9 +139,24 @@
 | Parada e nivelada, **caminho livre** (HC-SR04 sem eco, "Fora de alcance") | **Baixo** (~31, medido na sua montagem) |
 | Parada e nivelada, objeto entre 80 e 180 cm à frente | Médio (~55) |
 | Inclinar 20° a 44° | Médio (~49–56) |
-| **Inclinar 45° ou mais** (tombamento) | **Alto** (75) |
+| **Inclinar 45° ou mais** (tombamento) | **Alto** (75) parada; **Crítico** (~87) se estiver em movimento |
 | **Mão a 80 cm ou menos do HC-SR04** (obstáculo próximo) | **Alto** (75) |
 | Tombamento **e** obstáculo próximo (ou impacto) juntos | **Crítico** (88) |
+
+**Resultado do ensaio real (20/09/2026, 14:30–14:40, produção):**
+
+| Passo | Leituras | Risco medido |
+|---|---|---|
+| Nivelada, sensor livre | 10 leituras | **Baixo**, 30,6 a 31,2 |
+| Mão a ~30 cm (o HC-SR04 mediu 20,6 cm) | 4 leituras estáveis | **Alto**, 75,0 (uma leitura de transição em Médio, 52,8) |
+| Mão fora | na 1ª leitura seguinte | volta a **Baixo** (31,2) |
+| Inclinar para ~58–62° | 2 leituras | **Crítico**, 87,0 (o movimento da mão soma pontos) |
+| Voltando (38° e 33°, ainda mexendo) | 2 leituras | Alto, 74,7 |
+| Nivelada de novo | na 1ª leitura seguinte | volta a **Baixo** (~32) |
+| Inclinada + mão a 20–45 cm | 6 leituras | **Crítico**, 95,5 a 100 |
+| Tudo normal | 6 leituras | **Baixo** (30,6 a 32,2) |
+
+O que o dashboard mostrou: alertas **Policy Block**, **Policy Slope**, **Policy Alert Threshold** e **Excessive Tilt** ("Risco de instabilidade ou tombamento"), e o valor voltando a Baixo sozinho na leitura seguinte. Cada mudança aparece em até ~15 s (uma leitura); a leitura de transição costuma dar um valor intermediário.
 
 **Ações (sugestão de ordem de impacto visual):**
 1. Com a placa nivelada e o HC-SR04 apontado para um espaço livre (mostra "Fora de alcance"), mostre o **Baixo** (~31) e anote o Risk Score.
@@ -217,9 +234,20 @@
 **Pontos de atenção da telemetria:**
 - **Linha de base medida em 20/09/2026 (produção): 31 = Baixo**, com a placa nivelada e o HC-SR04 sem eco (confiança 65%, qualidade VALID). Antes das mudanças era "Médio" (~51 a 64) por causa da umidade do solo inventada. A explicação cita `water_proximity` (proximidade de água): esse fator vem da localização da fazenda e não muda com a placa. Com um objeto a ~1 m à frente, o risco sobe para Médio (~55).
 - **Bateria e GPS aparecem como N/D**, pois não há medição de bateria nem GPS na montagem. No bloco 3, cite só BME280, MPU-6050 e HC-SR04.
+- **Cuidado com o cartão "Fatores de risco mais frequentes" da Visão Geral:** ele mostra o peso das variáveis no modelo (hoje "Chuva intensa 32%", "Velocidade 28%"), não o que ocorreu nas leituras. Não o cite como se houvesse chuva ou velocidade. Prefira a explicação da aba Telemetria.
 - **Limite rígido do tombamento:** 44° dá "Médio" e 45° dá "Alto". Faça a inclinação de forma clara (bem acima de 45°) para o efeito ser óbvio, e o obstáculo a 50 cm ou menos.
 - **A inclinação usa uma referência de nivelamento fixa no firmware** (`Config.h`, commit `f6c89b6`), porque o MPU-6050 está de pé na montagem. Se mover o MPU ou a montagem, a leitura de "0°" muda; grave o vídeo com a montagem na mesma posição de hoje.
 - **Wi-Fi:** na primeira conexão do dia a placa levou 3 tentativas. Ligue-a 2 a 3 min antes de gravar e teste no Wi-Fi do local (2,4 GHz).
+
+**Ensaio do restante do dashboard (20/09/2026, logado como admin):**
+- ✅ Todas as abas carregam sem erro: Visão Geral, Operação em tempo real, Resumo executivo, Ranking, Risco regional, Tendências, Telemetria, Equipamentos, Alertas e auditoria, Políticas de alerta, Administração, Simulador e IA e ML.
+- ✅ **Calcular risco** (aba Operação em tempo real): 25,76 (Baixo), com decisão, rota e explicação. O clima aparece como "fallback" (não há chave de clima externo configurada); é esperado.
+- ✅ **Simulador** ("e se chover amanhã?"): base 25,8 (Baixo) → simulado 77,8 (Alto), "operação bloqueada por política" (chuva acima do limite e solo instável). Bom para o bloco 8.
+- ⚠️ **Auto ligado trava as abas seguintes** (ver aviso no bloco 5).
+- ⚠️ **Resumo executivo e Visão Geral mostram um histórico misturado:** média de risco 55,7 e 868 de 1.075 previsões em "Médio", herança do modelo antigo (com a umidade do solo inventada) e dos testes. A placa hoje está em Baixo (~31). Se perguntarem, explique que o histórico acumulado inclui a fase de testes com o modelo anterior; use a aba Telemetria (valores atuais) como prova.
+- ⚠️ **Aba IA e ML** mostra o JSON técnico do modelo (13 variáveis, `gradient_boosting`) e métricas (accuracy 99,5%, F1 78,3%). Não leia os números em voz alta; mostre só "modelo ativo, treinado com 5.117 dias de clima da NASA", e lembre que o alvo é heurístico.
+- ⚠️ **Nos Logs do Render aparece o IP público da sua conexão** (linhas `POST /api/v1/telemetry/esp`). Prefira provar o armazenamento com a tabela **Histórico** do dashboard, ou corte o IP na edição.
+- ❓ **Não ensaiado por mim (fica com você):** a tela de login (sair e entrar de novo, e uma senha errada) e o cadastro ao vivo de fazenda/máquina, porque exigem sua senha e gravam dados. Ensaie os dois com um nome de teste.
 
 **Números do painel que eram fixos no código (corrigido no commit `6472798`):**
 Os percentuais "+18,6%", "+27,4%", "+35,2%" e "+41,8%" e o gráfico "Sinistros potencialmente evitados" (risco médio × 1,8) foram removidos. Os cartões agora se chamam "Sinistros potenciais" e "Economia estimada", com o rótulo "estimativa ilustrativa" e as premissas na tela (R$ 32.800 por sinistro). No vídeo, apresente-os como estimativa, não como resultado medido.
