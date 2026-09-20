@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import datetime
 from typing import Any
@@ -7,6 +8,9 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from timeutils import LOCAL_TZ_LABEL, format_local_time, localize_time_columns  # noqa: E402
 
 import pydeck as pdk
 
@@ -645,6 +649,10 @@ def delete_json(url: str) -> tuple[bool, Any]:
 
 
 def any_to_dataframe(data: Any) -> pd.DataFrame:
+    return localize_time_columns(_any_to_dataframe_utc(data))
+
+
+def _any_to_dataframe_utc(data: Any) -> pd.DataFrame:
     if data is None:
         return pd.DataFrame()
 
@@ -854,7 +862,7 @@ def render_alert_cards(alerts_data: Any, limit: int = 4) -> None:
         tone = "hot" if severity == "high" else "warn" if severity == "medium" else ""
         title = str(alert.get("type", "alerta")).replace("_", " ").title()
         message = alert.get("message", "-")
-        timestamp = str(alert.get("timestamp", ""))[:16].replace("T", " ")
+        timestamp = format_local_time(alert.get("timestamp"), "%Y-%m-%d %H:%M", default="")
         st.markdown(
             f"""
             <div class="ag-alert-row">
@@ -1834,7 +1842,7 @@ if "Telemetria" in tab_map:
                 if issues:
                     st.caption("Qualidade: " + " | ".join(str(issue) for issue in issues))
                 st.caption(
-                    f"Recebido: {str(latest.get('received_at', '-'))[:19]} | "
+                    f"Recebido: {format_local_time(latest.get('received_at'))} ({LOCAL_TZ_LABEL}) | "
                     f"Origem: {'ESP32 fisico' if latest.get('iot_device_id') else 'legado'}"
                 )
 
@@ -1853,6 +1861,7 @@ if "Telemetria" in tab_map:
             if ok_history and isinstance(history_data, dict):
                 hist_df = any_to_dataframe(history_data.get("history", []))
                 st.markdown("#### Historico")
+                st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
                 if not hist_df.empty:
                     st.dataframe(hist_df, use_container_width=True)
                     time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
@@ -1890,6 +1899,7 @@ if "Telemetria" in tab_map:
                 events = events_data.get("events", [])
                 if events:
                     st.markdown("#### Eventos IoT")
+                    st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
                     st.dataframe(any_to_dataframe(events), use_container_width=True)
 
             if auto_refresh:
