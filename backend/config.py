@@ -94,6 +94,8 @@ class Settings:
     tilt_extreme_deg: float = float(
         os.getenv("IOT_INCLINATION_CRITICAL_DEG", os.getenv("TILT_EXTREME_DEG", "22"))
     )
+    # Inclinacao a partir da qual o equipamento e considerado em tombamento.
+    tilt_rollover_deg: float = float(os.getenv("TILT_ROLLOVER_DEG", "45"))
     acceleration_impact_g: float = float(os.getenv("ACCELERATION_IMPACT_G", "1.8"))
     iot_acceleration_max_m_s2: float = float(os.getenv("IOT_ACCELERATION_MAX_M_S2", "78.5"))
     iot_acceleration_suspect_m_s2: float = float(os.getenv("IOT_ACCELERATION_SUSPECT_M_S2", "70"))

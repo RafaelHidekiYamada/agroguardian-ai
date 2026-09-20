@@ -382,7 +382,7 @@ def test_critical_physical_signals_raise_risk_and_persist_critical_explanation(c
     with SessionLocal() as db:
         telemetry = db.get(models.IotTelemetry, critical.json()["telemetry_id"])
         assert telemetry is not None
-        assert telemetry.explanation["risk_level"] in {"alto", "critico"}
+        assert telemetry.explanation["risk_level"] == "critico"
         assert telemetry.explanation["main_factor"] in {"obstacle", "tilt", "movement_anomaly", "possible_impact"}
 
 

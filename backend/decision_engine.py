@@ -194,6 +194,45 @@ def _sensor_risk_points(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Pisos de seguranca: perigos fisicos diretos nao podem ser diluidos pelo modelo.
+SAFETY_FLOOR_HIGH = 75.0      # um perigo isolado => pelo menos "alto"
+SAFETY_FLOOR_CRITICAL = 88.0  # dois ou mais perigos combinados => "critico"
+
+
+def _safety_floor(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Minimum risk score forced by direct physical hazards (rollover, close obstacle, impact)."""
+    hazards: List[str] = []
+
+    tilt = payload.get("max_tilt_angle", payload.get("inclinacao"))
+    try:
+        if tilt is not None and abs(float(tilt)) >= settings.tilt_rollover_deg:
+            hazards.append(f"tombamento: inclinacao de {abs(float(tilt)):.0f} graus")
+    except (TypeError, ValueError):
+        pass
+
+    obstacle_cm = None
+    try:
+        if payload.get("obstacle_distance_cm") is not None:
+            obstacle_cm = float(payload["obstacle_distance_cm"])
+        elif payload.get("distancia_obstaculo") is not None:
+            obstacle_cm = float(payload["distancia_obstaculo"]) * 100.0
+    except (TypeError, ValueError):
+        obstacle_cm = None
+    if obstacle_cm is not None and obstacle_cm <= settings.obstacle_near_cm:
+        hazards.append(f"obstaculo proximo: {obstacle_cm:.0f} cm")
+
+    if bool(payload.get("possible_impact", False)):
+        hazards.append("possivel impacto detectado")
+
+    if len(hazards) >= 2:
+        score = SAFETY_FLOOR_CRITICAL
+    elif hazards:
+        score = SAFETY_FLOOR_HIGH
+    else:
+        score = 0.0
+    return {"score": score, "reasons": hazards}
+
+
 def _data_quality(payload: Dict[str, Any], weather: Dict[str, Any], geo_context: Dict[str, Any]) -> Dict[str, Any]:
     issues: List[str] = []
 
@@ -259,7 +298,11 @@ def calculate_contextual_risk(
     geo_adjustment = geo_risk_points * 0.55
     interaction_points = float(interaction["points"])
     sensor_points = float(sensor["points"])
-    uncapped_final_score = float(model_risk_score) + geo_adjustment + interaction_points + sensor_points
+    safety = _safety_floor(payload)
+    uncapped_final_score = max(
+        float(model_risk_score) + geo_adjustment + interaction_points + sensor_points,
+        float(safety["score"]),
+    )
     final_risk_score = _clamp(uncapped_final_score, 0.0, 100.0)
 
     threshold_penalty = 0.06 if 37 <= final_risk_score <= 44 or 67 <= final_risk_score <= 74 else 0.0
@@ -281,6 +324,8 @@ def calculate_contextual_risk(
         "interaction_reasons": interaction["reasons"],
         "sensor_risk_points": round(sensor_points, 2),
         "sensor_reasons": sensor["reasons"],
+        "safety_floor_score": safety["score"],
+        "safety_floor_reasons": safety["reasons"],
         "uncapped_final_score": round(uncapped_final_score, 2),
         "final_risk_score": round(final_risk_score, 2),
         "risk_band": _risk_band(final_risk_score),

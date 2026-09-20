@@ -345,7 +345,13 @@ def build_structured_explanation(
         item["importance_pct"] = round((item["impact_points"] / total_impact) * 100, 2) if total_impact else 0
 
     main_factor = factors[0]["factor"] if factors else None
-    if factors:
+    safety_reasons = risk_components.get("safety_floor_reasons") or []
+    if safety_reasons:
+        summary = (
+            f"Risco {_risk_level_slug(risk_label)} por regra de seguranca: "
+            f"{'; '.join(safety_reasons)}."
+        )
+    elif factors:
         summary = (
             f"Risco {_risk_level_slug(risk_label)} porque {factors[0]['factor']} "
             f"e outros sinais operacionais adicionaram pressao ao score."
