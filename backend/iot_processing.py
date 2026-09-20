@@ -302,7 +302,7 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         operation_type=payload.operation_type or "campo",
         clima=_infer_climate(payload),
         umidade_solo=soil_moisture_pct,
-        inclinacao=float(inclination_deg or 0.0),
+        inclinacao=_terrain_inclination(inclination_deg),
         distancia_agua=999.0,
         velocidade=float(payload.speed_kmh or 0.0),
         historico_sinistros=0.0,
@@ -428,6 +428,18 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
     )
 
 
+MAX_TERRAIN_INCLINATION_DEG = 90.0
+
+
+def _terrain_inclination(inclination_deg: float | None) -> float:
+    """Clamp the sensor tilt (0-180 deg) to the range TelemetryInput accepts.
+
+    A tilt above 90 deg (e.g. an overturned machine) must not crash ingestion.
+    The raw value stays in the stored telemetry and in max_tilt_angle.
+    """
+    return min(MAX_TERRAIN_INCLINATION_DEG, max(0.0, float(inclination_deg or 0.0)))
+
+
 def apply_risk_context(payload: dict[str, Any], context: RiskContext) -> dict[str, Any]:
     """Give valid recent physical readings priority over simulated equivalents."""
     if not context.is_usable:
@@ -443,7 +455,7 @@ def apply_risk_context(payload: dict[str, Any], context: RiskContext) -> dict[st
         "gps_accuracy_m": iot.get("gps_accuracy_m"),
         "gps_satellites": iot.get("gps_satellites"),
         "distancia_obstaculo": (float(iot["distance_cm"]) / 100.0) if iot.get("distance_cm") is not None else None,
-        "inclinacao": iot.get("inclination_deg"),
+        "inclinacao": _terrain_inclination(iot.get("inclination_deg")) if iot.get("inclination_deg") is not None else None,
         "acceleration_magnitude": iot.get("acceleration_magnitude"),
         "movement_anomaly_score": iot.get("movement_anomaly_score"),
         "possible_impact": iot.get("possible_impact"),

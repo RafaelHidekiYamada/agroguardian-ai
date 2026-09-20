@@ -388,3 +388,41 @@ def test_critical_physical_signals_raise_risk_and_persist_critical_explanation(c
         assert telemetry is not None
         assert telemetry.explanation["risk_level"] == "critico"
         assert telemetry.explanation["main_factor"] in {"obstacle", "tilt", "movement_anomaly", "possible_impact"}
+
+
+def test_board_tilted_beyond_90_degrees_is_stored_and_scored_instead_of_failing(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "TILT122")
+    payload = {
+        "device_id": device_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "sequence_number": 5120,
+        "operation_type": "campo",
+        "firmware_version": "agroguardian-esp32-2.0.0",
+        "mpu6050": {
+            "accel_x": 9.524,
+            "accel_y": 1.961,
+            "accel_z": -1.511,
+            "gyro_x": -0.73,
+            "gyro_y": -0.96,
+            "gyro_z": 0.11,
+            "pitch": -122.4,
+            "roll": -12.7,
+            "inclination_deg": 122.4,
+        },
+        "ultrasonic": {"sensor_model": "HC-SR04", "distance_cm": 20.6},
+    }
+
+    response = client.post(
+        ESP_TELEMETRY_ENDPOINT,
+        json=payload,
+        headers={"X-Device-ID": device_id, "X-API-Key": api_key},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["risk_updated"] is True
+
+    latest = client.get("/api/v1/equipments/1/telemetry/latest", headers=_admin_headers(client))
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["telemetry"]["inclination_deg"] == pytest.approx(122.4)
