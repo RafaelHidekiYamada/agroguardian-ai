@@ -47,6 +47,20 @@
 #define AGRO_BME280_ADDRESS_PRIMARY 0x76
 #define AGRO_BME280_ADDRESS_SECONDARY 0x77
 
+// Referencia de "nivelado" do MPU-6050.
+// Com 1, a inclinacao e o angulo entre a gravidade atual e o vetor de referencia
+// abaixo, em vez de assumir que o eixo Z aponta para cima. Use quando o modulo
+// estiver fixado de pe/de lado. O vetor e a aceleracao (m/s2) lida com a
+// montagem parada e nivelada; so a direcao importa. Para recalibrar, leia
+// accel_x/y/z no monitor serial com a montagem nivelada e atualize os tres valores.
+// Com 0, usa os angulos do MPU6050_tockn (Z para cima).
+#define AGRO_MPU_USE_LEVEL_REFERENCE 1
+#define AGRO_MPU_LEVEL_REF_X 9.706f
+#define AGRO_MPU_LEVEL_REF_Y 1.417f
+#define AGRO_MPU_LEVEL_REF_Z -0.778f
+// Suavizacao da gravidade usada na inclinacao (0-1; menor = mais suave).
+#define AGRO_MPU_TILT_FILTER_ALPHA 0.5f
+
 // HC-SR04. O ECHO e 5 V e exige divisor resistivo/level shifter antes do ESP32.
 #define AGRO_ENABLE_ULTRASONIC 1
 #define AGRO_ULTRASONIC_MODEL "HC-SR04"

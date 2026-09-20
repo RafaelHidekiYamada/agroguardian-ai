@@ -218,6 +218,9 @@ void initializeSensors() {
     mpu.calcGyroOffsets(true, 1000, 1000);
     mpuReady = true;
     Serial.println("[SENSOR] MPU-6050 pronto.");
+#if AGRO_MPU_USE_LEVEL_REFERENCE
+    Serial.println("[SENSOR] Inclinacao relativa a referencia de nivelamento (Config.h).");
+#endif
   } else {
     Serial.println("[SENSOR] MPU-6050 nao encontrado em 0x68.");
   }
@@ -305,6 +308,85 @@ float readSoilMoisturePct() {
 }
 #endif
 
+#if AGRO_MPU_USE_LEVEL_REFERENCE
+struct LevelTilt {
+  bool valid = false;
+  float pitchDeg = NAN;
+  float rollDeg = NAN;
+  float inclinationDeg = NAN;
+};
+
+struct Vec3 {
+  float x, y, z;
+};
+
+Vec3 vecCross(const Vec3& a, const Vec3& b) {
+  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+float vecDot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+Vec3 vecNormalized(const Vec3& v) {
+  const float length = sqrtf(vecDot(v, v));
+  return {v.x / length, v.y / length, v.z / length};
+}
+
+// Inclinacao relativa a referencia de "nivelado" configurada em Config.h.
+// Monta um referencial (direita, frente, cima) a partir do vetor de referencia e
+// mede a gravidade atual nele: 0 graus = como na referencia, 180 = de cabeca para baixo.
+LevelTilt tiltFromLevelReference(float accelX, float accelY, float accelZ) {
+  static bool basisReady = false;
+  static Vec3 up, forward, right;
+  static bool filterReady = false;
+  static Vec3 filtered;
+
+  if (!basisReady) {
+    up = vecNormalized({AGRO_MPU_LEVEL_REF_X, AGRO_MPU_LEVEL_REF_Y, AGRO_MPU_LEVEL_REF_Z});
+    // Eixo do sensor menos alinhado com "cima" serve de base para "frente".
+    Vec3 axis = {1.0f, 0.0f, 0.0f};
+    float smallest = fabsf(up.x);
+    if (fabsf(up.y) < smallest) {
+      axis = {0.0f, 1.0f, 0.0f};
+      smallest = fabsf(up.y);
+    }
+    if (fabsf(up.z) < smallest) axis = {0.0f, 0.0f, 1.0f};
+    const float along = vecDot(axis, up);
+    forward = vecNormalized({axis.x - along * up.x, axis.y - along * up.y, axis.z - along * up.z});
+    right = vecCross(forward, up);
+    basisReady = true;
+  }
+
+  LevelTilt tilt;
+  const float magnitude = sqrtf(accelX * accelX + accelY * accelY + accelZ * accelZ);
+  // Queda livre ou impacto forte: a gravidade nao e confiavel; nao atualiza a inclinacao.
+  if (!isfinite(magnitude) || magnitude < 0.3f * STANDARD_GRAVITY_M_S2 || magnitude > 3.0f * STANDARD_GRAVITY_M_S2) {
+    return tilt;
+  }
+
+  if (!filterReady) {
+    filtered = {accelX, accelY, accelZ};
+    filterReady = true;
+  } else {
+    filtered.x += AGRO_MPU_TILT_FILTER_ALPHA * (accelX - filtered.x);
+    filtered.y += AGRO_MPU_TILT_FILTER_ALPHA * (accelY - filtered.y);
+    filtered.z += AGRO_MPU_TILT_FILTER_ALPHA * (accelZ - filtered.z);
+  }
+
+  const float alongUp = vecDot(filtered, up);
+  const float alongForward = vecDot(filtered, forward);
+  const float alongRight = vecDot(filtered, right);
+  const float filteredMagnitude = sqrtf(vecDot(filtered, filtered));
+  if (filteredMagnitude < 1.0f) return tilt;
+
+  constexpr float RAD_TO_DEG_F = 57.2957795f;
+  tilt.pitchDeg = atan2f(alongForward, alongUp) * RAD_TO_DEG_F;
+  tilt.rollDeg = atan2f(alongRight, alongUp) * RAD_TO_DEG_F;
+  tilt.inclinationDeg = acosf(constrain(alongUp / filteredMagnitude, -1.0f, 1.0f)) * RAD_TO_DEG_F;
+  tilt.valid = true;
+  return tilt;
+}
+#endif
+
 void updateSensors() {
   SensorSnapshot snapshot;
 
@@ -325,8 +407,15 @@ void updateSensors() {
     const float gyroX = mpu.getGyroX();
     const float gyroY = mpu.getGyroY();
     const float gyroZ = mpu.getGyroZ();
-    const float roll = mpu.getAngleX();
-    const float pitch = mpu.getAngleY();
+    float roll = mpu.getAngleX();
+    float pitch = mpu.getAngleY();
+    float levelInclination = NAN;
+#if AGRO_MPU_USE_LEVEL_REFERENCE
+    const LevelTilt levelTilt = tiltFromLevelReference(accelX, accelY, accelZ);
+    roll = levelTilt.rollDeg;
+    pitch = levelTilt.pitchDeg;
+    levelInclination = levelTilt.inclinationDeg;
+#endif
 
     if (finiteInRange(accelX, -160.0f, 160.0f)) snapshot.accelXMss = accelX;
     if (finiteInRange(accelY, -160.0f, 160.0f)) snapshot.accelYMss = accelY;
@@ -336,7 +425,9 @@ void updateSensors() {
     if (finiteInRange(gyroZ, -5000.0f, 5000.0f)) snapshot.gyroZDps = gyroZ;
     if (finiteInRange(pitch, -180.0f, 180.0f)) snapshot.pitchDeg = pitch;
     if (finiteInRange(roll, -180.0f, 180.0f)) snapshot.rollDeg = roll;
-    if (isfinite(snapshot.pitchDeg) || isfinite(snapshot.rollDeg)) {
+    if (isfinite(levelInclination)) {
+      snapshot.inclinationDeg = levelInclination;
+    } else if (isfinite(snapshot.pitchDeg) || isfinite(snapshot.rollDeg)) {
       const float absolutePitch = isfinite(snapshot.pitchDeg) ? fabsf(snapshot.pitchDeg) : 0.0f;
       const float absoluteRoll = isfinite(snapshot.rollDeg) ? fabsf(snapshot.rollDeg) : 0.0f;
       snapshot.inclinationDeg = max(absolutePitch, absoluteRoll);
