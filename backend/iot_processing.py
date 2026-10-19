@@ -111,6 +111,20 @@ def _ultrasonic_sensor(payload: IotTelemetryInput):
     return payload.ultrasonic or payload.jsn_sr04t or payload.obstacle
 
 
+def _ultrasonic_no_echo(sensor: Any) -> bool:
+    """True when the ultrasonic sensor reported a timeout (no echo) and no distance.
+
+    A timeout means nothing was detected within the sensor range, so it is treated
+    as "out of range" (no obstacle) instead of a fault that would suspend the risk
+    calculation. A distance reading always takes precedence.
+    """
+    return (
+        sensor is not None
+        and bool(getattr(sensor, "timeout", False))
+        and getattr(sensor, "distance_cm", None) is None
+    )
+
+
 def _ultrasonic_sensor_model(payload: IotTelemetryInput, sensor: Any) -> str | None:
     explicit_model = getattr(sensor, "sensor_model", None) if sensor is not None else None
     if explicit_model:
@@ -141,6 +155,8 @@ def evaluate_iot_quality(
     payload: IotTelemetryInput,
     timestamp: datetime,
     derived: dict[str, Any],
+    *,
+    buffered: bool = False,
 ) -> dict[str, Any]:
     missing_sensors: list[str] = []
     issues: list[str] = []
@@ -150,17 +166,25 @@ def evaluate_iot_quality(
         missing_sensors.append("BME280")
     if _sensor_missing(payload.mpu6050, ("accel_x", "accel_y", "accel_z", "inclination_deg", "pitch", "roll")):
         missing_sensors.append("MPU6050")
-    if _sensor_missing(ultrasonic, ("distance_cm",)):
+    no_echo = _ultrasonic_no_echo(ultrasonic)
+    notes: list[str] = []
+    if _sensor_missing(ultrasonic, ("distance_cm",)) and not no_echo:
         missing_sensors.append("ULTRASONIC")
-    if ultrasonic is not None and bool(getattr(ultrasonic, "timeout", False)):
-        issues.append("sensor ultrassonico sem leitura por timeout")
+    if no_echo:
+        notes.append("ultrassonico sem eco (timeout): nenhum obstaculo dentro do alcance")
     if ultrasonic is not None and bool(getattr(ultrasonic, "out_of_range", False)):
         issues.append("sensor ultrassonico fora de alcance")
 
     age = telemetry_age_seconds(timestamp)
     freshness = telemetry_status(age)
     if freshness != "LIVE":
-        issues.append(f"telemetria {freshness.lower()} ({int(age)} segundos)")
+        if buffered:
+            # A reading delivered from the device buffer is old by design. Its age
+            # is recorded as a note, not as a data-quality issue, so a faithful
+            # historical reading is not downgraded to SUSPECT.
+            notes.append(f"leitura em buffer entregue com atraso de {int(age)} segundos")
+        else:
+            issues.append(f"telemetria {freshness.lower()} ({int(age)} segundos)")
 
     future_delta = (normalize_timestamp(timestamp) - utcnow()).total_seconds()
     if future_delta > settings.iot_future_timestamp_tolerance_seconds:
@@ -169,7 +193,7 @@ def evaluate_iot_quality(
             "telemetry_status": "SUSPECT",
             "telemetry_age_seconds": 0.0,
             "missing_sensors": missing_sensors,
-            "data_quality_issues": issues + ["timestamp acima da tolerancia futura"],
+            "data_quality_issues": issues + notes + ["timestamp acima da tolerancia futura"],
             "confidence_score": 0.0,
         }
 
@@ -177,7 +201,9 @@ def evaluate_iot_quality(
     if accel is not None and float(accel) > settings.iot_acceleration_suspect_m_s2:
         issues.append("aceleracao fora do padrao esperado do MPU6050")
 
-    if len(missing_sensors) == 3:
+    # A no-echo ultrasonic reading carries no measurement: it must not make an
+    # otherwise empty payload look usable.
+    if len(missing_sensors) + (1 if no_echo else 0) == 3:
         status = "INVALID"
         issues.append("nenhum sensor utilizavel enviado")
     elif issues:
@@ -194,12 +220,18 @@ def evaluate_iot_quality(
         "telemetry_status": freshness,
         "telemetry_age_seconds": round(age, 2),
         "missing_sensors": missing_sensors,
-        "data_quality_issues": issues,
+        "data_quality_issues": issues + notes,
         "confidence_score": round(confidence_score, 2),
     }
 
 
-def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> dict[str, Any]:
+def build_iot_context(
+    payload: IotTelemetryInput,
+    equipment: Any,
+    farm: Any,
+    *,
+    buffered: bool = False,
+) -> dict[str, Any]:
     timestamp = normalize_timestamp(payload.timestamp)
     bme = payload.bme280
     mpu = payload.mpu6050
@@ -221,12 +253,14 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         gyro_abnormal_dps=settings.gyro_abnormal_dps,
         tilt_high_deg=settings.iot_inclination_high_deg,
     )
-    quality = evaluate_iot_quality(payload, timestamp, mpu_features)
+    quality = evaluate_iot_quality(payload, timestamp, mpu_features, buffered=buffered)
 
     distance_cm = ultrasonic.distance_cm if ultrasonic else None
     obstacle_detected = getattr(ultrasonic, "detected", None) if ultrasonic else None
     if obstacle_detected is None and distance_cm is not None:
         obstacle_detected = float(distance_cm) <= settings.iot_distance_attention_cm
+    elif obstacle_detected is None and _ultrasonic_no_echo(ultrasonic):
+        obstacle_detected = False
 
     latitude = gps.latitude if gps and gps.latitude is not None else getattr(farm, "latitude", None)
     longitude = gps.longitude if gps and gps.longitude is not None else getattr(farm, "longitude", None)
@@ -234,19 +268,14 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
     # the same absolute maximum for compatibility with older devices.
     inclination_deg = mpu_features.get("max_tilt_angle")
     rain_mm = float(payload.rain_mm or 0)
-    # Air humidity is not treated as soil moisture. A real physical reading has
-    # priority; the neutral rain-derived value only covers devices without it.
-    soil_moisture_pct = payload.soil_moisture_pct
-    soil_source = "sensor" if soil_moisture_pct is not None else "fallback"
-    if soil_moisture_pct is None:
-        soil_moisture_pct = min(100.0, max(0.0, 50.0 + min(rain_mm * 2.0, 35.0)))
+    # Soil moisture is not part of the risk calculation (the project has no soil
+    # sensor). A value sent by a device is still stored with the telemetry.
     solo_instavel = int(rain_mm >= 10 and inclination_deg is not None and inclination_deg >= settings.iot_inclination_attention_deg)
 
     iot_snapshot = {
         "temperature_c": bme.temperature_c if bme else None,
         "humidity_pct": bme.humidity_pct if bme else None,
         "pressure_hpa": bme.pressure_hpa if bme else None,
-        "soil_moisture_pct": soil_moisture_pct,
         "battery_voltage": payload.battery_voltage,
         "distance_cm": distance_cm,
         "ultrasonic_sensor_model": ultrasonic_sensor_model,
@@ -282,11 +311,7 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         telemetry_age_seconds=quality["telemetry_age_seconds"],
         confidence_score=quality["confidence_score"],
         iot=iot_snapshot,
-        soil={
-            "source": soil_source,
-            "moisture_pct": soil_moisture_pct,
-            "moisture_proxy_pct": soil_moisture_pct if soil_source == "fallback" else None,
-        },
+        soil={"source": "not_used"},
         terrain={
             "latitude": latitude,
             "longitude": longitude,
@@ -301,8 +326,7 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         region=getattr(farm, "region", settings.default_region),
         operation_type=payload.operation_type or "campo",
         clima=_infer_climate(payload),
-        umidade_solo=soil_moisture_pct,
-        inclinacao=float(inclination_deg or 0.0),
+        inclinacao=_terrain_inclination(inclination_deg),
         distancia_agua=999.0,
         velocidade=float(payload.speed_kmh or 0.0),
         historico_sinistros=0.0,
@@ -397,7 +421,6 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "temperature_c": getattr(row, "temperature_c", None),
             "humidity_pct": getattr(row, "humidity_pct", None),
             "pressure_hpa": getattr(row, "pressure_hpa", None),
-            "soil_moisture_pct": getattr(row, "soil_moisture_pct", None),
             "battery_voltage": getattr(row, "battery_voltage", None),
             "distance_cm": distance_cm,
             "ultrasonic_sensor_model": getattr(row, "ultrasonic_sensor_model", None),
@@ -415,10 +438,7 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "gps_accuracy_m": getattr(row, "gps_accuracy_m", None),
             "gps_satellites": getattr(row, "gps_satellites", None),
         },
-        soil={
-            "source": "sensor" if getattr(row, "soil_moisture_pct", None) is not None else "unavailable",
-            "moisture_pct": getattr(row, "soil_moisture_pct", None),
-        },
+        soil={"source": "not_used"},
         terrain={
             "latitude": getattr(row, "latitude", None),
             "longitude": getattr(row, "longitude", None),
@@ -426,6 +446,18 @@ def risk_context_from_telemetry(row: Any, equipment: Any, farm: Any) -> RiskCont
             "gps_satellites": getattr(row, "gps_satellites", None),
         },
     )
+
+
+MAX_TERRAIN_INCLINATION_DEG = 90.0
+
+
+def _terrain_inclination(inclination_deg: float | None) -> float:
+    """Clamp the sensor tilt (0-180 deg) to the range TelemetryInput accepts.
+
+    A tilt above 90 deg (e.g. an overturned machine) must not crash ingestion.
+    The raw value stays in the stored telemetry and in max_tilt_angle.
+    """
+    return min(MAX_TERRAIN_INCLINATION_DEG, max(0.0, float(inclination_deg or 0.0)))
 
 
 def apply_risk_context(payload: dict[str, Any], context: RiskContext) -> dict[str, Any]:
@@ -438,12 +470,11 @@ def apply_risk_context(payload: dict[str, Any], context: RiskContext) -> dict[st
         "temperatura_c": iot.get("temperature_c"),
         "umidade_ar": iot.get("humidity_pct"),
         "pressao_hpa": iot.get("pressure_hpa"),
-        "umidade_solo": iot.get("soil_moisture_pct"),
         "battery_voltage": iot.get("battery_voltage"),
         "gps_accuracy_m": iot.get("gps_accuracy_m"),
         "gps_satellites": iot.get("gps_satellites"),
         "distancia_obstaculo": (float(iot["distance_cm"]) / 100.0) if iot.get("distance_cm") is not None else None,
-        "inclinacao": iot.get("inclination_deg"),
+        "inclinacao": _terrain_inclination(iot.get("inclination_deg")) if iot.get("inclination_deg") is not None else None,
         "acceleration_magnitude": iot.get("acceleration_magnitude"),
         "movement_anomaly_score": iot.get("movement_anomaly_score"),
         "possible_impact": iot.get("possible_impact"),
@@ -514,3 +545,179 @@ def build_iot_events(context: RiskContext) -> list[dict[str, Any]]:
         }
         for event_type, severity, value, unit, description in events
     ]
+
+
+# --- Store-and-forward: signal status and timeline segments -----------------
+
+
+def signal_status(last_contact: datetime | None, *, now: datetime | None = None) -> str:
+    """COM_SINAL while the device reached the backend recently, SEM_SINAL otherwise.
+
+    "Contact" is the last time the backend heard from the device (live reading or
+    batch), not the time a reading was recorded: a device that was offline but
+    kept collecting data is SEM_SINAL until its batch arrives.
+    """
+    if last_contact is None:
+        return "SEM_SINAL"
+    age = telemetry_age_seconds(last_contact, now=now)
+    limit = max(settings.iot_stale_seconds, settings.iot_offline_threshold_seconds)
+    return "COM_SINAL" if age <= limit else "SEM_SINAL"
+
+
+def _row_time(row: Any) -> datetime:
+    return normalize_timestamp(getattr(row, "recorded_at", None) or getattr(row, "timestamp", None))
+
+
+def _row_delay_seconds(row: Any) -> float:
+    received = getattr(row, "received_at", None)
+    if received is None:
+        return 0.0
+    return max(0.0, (normalize_timestamp(received) - _row_time(row)).total_seconds())
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def build_telemetry_segments(
+    rows: list[Any],
+    *,
+    now: datetime | None = None,
+    gap_seconds: int | None = None,
+    buffered_delay_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Describe a device timeline as segments that tell the operator what happened.
+
+    Segment kinds:
+      - ``online``: readings delivered live.
+      - ``offline_com_coleta``: readings collected while offline and delivered later
+        from the device buffer (no data was lost).
+      - ``reiniciou``: the boot_id changed between two consecutive readings.
+      - ``sem_dados``: no readings for longer than ``gap_seconds`` (or readings
+        discarded by the device buffer: ``missing_readings``). The last segment is
+        open (``end`` is null) when the device is currently silent.
+
+    Rows whose time is unknown (``time_quality == "unknown"``) are listed in the
+    summary but never used to infer gaps, because their recorded_at is the arrival time.
+    """
+    now = normalize_timestamp(now) if now is not None else utcnow()
+    gap_limit = int(gap_seconds if gap_seconds is not None else settings.iot_gap_seconds)
+    delay_limit = int(
+        buffered_delay_seconds if buffered_delay_seconds is not None else settings.iot_buffered_delay_seconds
+    )
+    ordered = sorted(
+        rows,
+        key=lambda row: (_row_time(row), getattr(row, "sequence_number", None) or 0),
+    )
+
+    segments: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    unknown_time_readings = 0
+    previous: Any = None
+
+    def close_current() -> None:
+        nonlocal current
+        if current is not None:
+            segments.append(current)
+            current = None
+
+    for row in ordered:
+        time_unknown = getattr(row, "time_quality", None) == "unknown"
+        if time_unknown:
+            unknown_time_readings += 1
+        buffered = getattr(row, "ingestion_mode", None) == "buffered" and _row_delay_seconds(row) > delay_limit
+        kind = "offline_com_coleta" if buffered else "online"
+        recorded_at = _row_time(row)
+        received_at = getattr(row, "received_at", None)
+        received_at = normalize_timestamp(received_at) if received_at is not None else None
+
+        if previous is not None and not time_unknown and getattr(previous, "time_quality", None) != "unknown":
+            previous_time = _row_time(previous)
+            gap = (recorded_at - previous_time).total_seconds()
+            previous_seq = getattr(previous, "sequence_number", None)
+            sequence = getattr(row, "sequence_number", None)
+            missing = 0
+            if previous_seq is not None and sequence is not None and sequence - previous_seq > 1:
+                missing = sequence - previous_seq - 1
+            previous_boot = getattr(previous, "boot_id", None)
+            boot = getattr(row, "boot_id", None)
+            restarted = previous_boot is not None and boot is not None and boot != previous_boot
+            if gap > gap_limit or missing > 0:
+                close_current()
+                segments.append(
+                    {
+                        "kind": "sem_dados",
+                        "start": _iso(previous_time),
+                        "end": _iso(recorded_at),
+                        "duration_seconds": round(max(0.0, gap), 2),
+                        "missing_readings": missing,
+                        "open": False,
+                    }
+                )
+            if restarted:
+                close_current()
+                segments.append(
+                    {
+                        "kind": "reiniciou",
+                        "at": _iso(recorded_at),
+                        "from_boot_id": previous_boot,
+                        "to_boot_id": boot,
+                        "reset_reason": getattr(row, "reset_reason", None),
+                    }
+                )
+
+        if current is None or current["kind"] != kind:
+            close_current()
+            current = {
+                "kind": kind,
+                "start": _iso(recorded_at),
+                "end": _iso(recorded_at),
+                "readings": 0,
+                "first_sequence": getattr(row, "sequence_number", None),
+                "last_sequence": getattr(row, "sequence_number", None),
+                "delivered_at": _iso(received_at),
+                "max_delay_seconds": 0.0,
+            }
+        current["end"] = _iso(recorded_at)
+        current["readings"] += 1
+        current["last_sequence"] = getattr(row, "sequence_number", None)
+        if received_at is not None:
+            delivered = current["delivered_at"]
+            if delivered is None or received_at.isoformat() > delivered:
+                current["delivered_at"] = _iso(received_at)
+        current["max_delay_seconds"] = round(max(current["max_delay_seconds"], _row_delay_seconds(row)), 2)
+        previous = row
+
+    close_current()
+
+    last_known = None
+    for row in reversed(ordered):
+        if getattr(row, "time_quality", None) != "unknown":
+            last_known = row
+            break
+    open_gap = None
+    if last_known is not None:
+        silence = (now - _row_time(last_known)).total_seconds()
+        if silence > max(gap_limit, settings.iot_offline_threshold_seconds):
+            open_gap = {
+                "kind": "sem_dados",
+                "start": _iso(_row_time(last_known)),
+                "end": None,
+                "duration_seconds": round(silence, 2),
+                "missing_readings": 0,
+                "open": True,
+            }
+            segments.append(open_gap)
+
+    summary = {
+        "readings": len(ordered),
+        "online_readings": sum(s["readings"] for s in segments if s["kind"] == "online"),
+        "offline_com_coleta_readings": sum(s["readings"] for s in segments if s["kind"] == "offline_com_coleta"),
+        "restarts": sum(1 for s in segments if s["kind"] == "reiniciou"),
+        "gaps": sum(1 for s in segments if s["kind"] == "sem_dados"),
+        "missing_readings": sum(int(s.get("missing_readings", 0)) for s in segments if s["kind"] == "sem_dados"),
+        "unknown_time_readings": unknown_time_readings,
+        "currently_silent": open_gap is not None,
+    }
+    return {"segments": segments, "summary": summary}
+

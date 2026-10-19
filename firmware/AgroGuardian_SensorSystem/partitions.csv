@@ -1,0 +1,11 @@
+# AgroGuardian - tabela de particoes (ESP32 4 MB) com OTA e buffer de telemetria.
+# Mesmo inicio da tabela padrao (nvs 20 KB e otadata nos mesmos offsets, para
+# nao mexer no NVS). Os dois slots de app passam a 1,0625 MiB (0x110000) e o
+# restante vira a particao "telebuf" (anel de telemetria, subtipo 0x40).
+# Para voltar a tabela padrao: veja REVERTER_BUFFER_FLASH.md.
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x9000,   0x5000,
+otadata,   data, ota,     0xE000,   0x2000,
+app0,      app,  ota_0,   0x10000,  0x110000,
+app1,      app,  ota_1,   0x120000, 0x110000,
+telebuf,   data, 0x40,    0x230000, 0x1D0000,

@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 
 CANONICAL_TELEMETRY_PATH = "/api/v1/telemetry/esp"
 LEGACY_TELEMETRY_PATH = "/api/v1/iot/telemetry"
+BATCH_TELEMETRY_PATH = "/api/v1/telemetry/esp/batch"
 
 SCENARIOS = {
     "normal": {
@@ -80,6 +81,150 @@ def telemetry_url(api_url: str) -> str:
     return f"{base}{CANONICAL_TELEMETRY_PATH}"
 
 
+def batch_url(api_url: str) -> str:
+    """URL do endpoint de lote, a partir de qualquer URL base ou de endpoint conhecido."""
+    base = api_url.rstrip("/")
+    if base.endswith(BATCH_TELEMETRY_PATH):
+        return base
+    for suffix in (CANONICAL_TELEMETRY_PATH, LEGACY_TELEMETRY_PATH):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return f"{base}{BATCH_TELEMETRY_PATH}"
+
+
+def build_buffered_reading(
+    scenario: str,
+    sequence_number: int,
+    recorded_at: datetime | None,
+    *,
+    boot_id: int = 1,
+    uptime_ms: int = 0,
+    time_quality: str = "synced",
+    reset_reason: str | None = None,
+) -> dict:
+    """Leitura de um lote: o que o firmware guarda na flash e reenvia ao reconectar.
+
+    device_id, versao e tipo de operacao vao no cabecalho do lote. Com
+    time_quality="unknown" o timestamp e omitido (ESP32 que nunca sincronizou o NTP).
+    """
+    scenario = SCENARIO_ALIASES.get(scenario, scenario)
+    reading = {
+        "sequence_number": sequence_number,
+        "boot_id": boot_id,
+        "uptime_ms": uptime_ms,
+        "time_quality": time_quality,
+        "buffered": True,
+        **SCENARIOS[scenario],
+    }
+    if recorded_at is not None and time_quality != "unknown":
+        reading["timestamp"] = recorded_at.astimezone(timezone.utc).isoformat()
+    if reset_reason:
+        reading["reset_reason"] = reset_reason
+    reading["jsn_sr04t"] = {"timeout": False, "out_of_range": False, **reading["jsn_sr04t"]}
+    return reading
+
+
+def simulate_offline_backlog(
+    scenario: str,
+    sequence_start: int,
+    count: int,
+    interval_seconds: float,
+    *,
+    end_time: datetime | None = None,
+    boot_id: int = 1,
+    restart_after: int | None = None,
+    restart_gap_seconds: float = 0.0,
+    time_quality: str = "synced",
+) -> list[dict]:
+    """Gera `count` leituras coletadas offline, em ordem cronologica, terminando em `end_time`.
+
+    restart_after=K simula uma queda de energia depois da K-esima leitura: o boot_id sobe,
+    o uptime recomeca, o numero de sequencia continua (ele fica na NVS) e o relogio
+    avanca `restart_gap_seconds` sem leituras.
+    """
+    if count < 1:
+        raise ValueError("count deve ser maior que zero")
+    end_time = end_time or datetime.now(timezone.utc)
+    gap = restart_gap_seconds if restart_after is not None and 0 < restart_after < count else 0.0
+    start_time = end_time - timedelta(seconds=interval_seconds * (count - 1) + gap)
+    readings: list[dict] = []
+    current_boot = boot_id
+    boot_start_index = 0
+    clock = start_time
+    for index in range(count):
+        reset_reason = None
+        if restart_after is not None and index == restart_after:
+            current_boot += 1
+            boot_start_index = index
+            clock += timedelta(seconds=gap)
+            reset_reason = "poweron"
+        readings.append(
+            build_buffered_reading(
+                scenario,
+                sequence_start + index,
+                clock,
+                boot_id=current_boot,
+                uptime_ms=int((index - boot_start_index) * interval_seconds * 1000),
+                time_quality=time_quality,
+                reset_reason=reset_reason,
+            )
+        )
+        clock += timedelta(seconds=interval_seconds)
+    return readings
+
+
+def chunk_readings(readings: list[dict], batch_size: int) -> list[list[dict]]:
+    if batch_size < 1:
+        raise ValueError("batch_size deve ser maior que zero")
+    return [readings[start : start + batch_size] for start in range(0, len(readings), batch_size)]
+
+
+def build_batch(device_id: str, readings: list[dict], *, more_pending: bool = False) -> dict:
+    first, last = readings[0], readings[-1]
+    return {
+        "device_id": device_id,
+        "batch_id": f"b{first.get('boot_id', 0)}-{first['sequence_number']}-{last['sequence_number']}",
+        "firmware_version": "esp32-simulator-2.0",
+        "operation_type": "campo",
+        "more_pending": more_pending,
+        "readings": readings,
+    }
+
+
+def run_offline_flush(args, headers: dict) -> int:
+    """Simula `--offline-seconds` de coleta sem rede e envia o acumulado em lotes."""
+    count = max(1, int(args.offline_seconds / args.offline_interval))
+    readings = simulate_offline_backlog(
+        args.scenario,
+        args.sequence_start,
+        count,
+        args.offline_interval,
+        restart_after=args.restart_after,
+        restart_gap_seconds=args.restart_gap,
+        time_quality="unknown" if args.unknown_time else "synced",
+    )
+    batches = chunk_readings(readings, args.batch_size)
+    url = batch_url(args.api_url)
+    print(f"Offline simulado: {count} leituras em {len(batches)} lote(s) para {url}")
+    failures = 0
+    for number, chunk in enumerate(batches, start=1):
+        body = build_batch(args.device_id, chunk, more_pending=number < len(batches))
+        for attempt in range(2 if args.duplicate_batch and number == 1 else 1):
+            try:
+                response = requests.post(url, json=body, headers=headers, timeout=30)
+                label = "reenvio" if attempt else "envio"
+                print(f"[lote {number}/{len(batches)} {label}] {response.status_code} {response.text[:300]}")
+                if not response.ok:
+                    failures += 1
+            except requests.RequestException as exc:
+                print(f"[lote {number}/{len(batches)}] request failed: {exc}")
+                failures += 1
+        if number < len(batches):
+            time.sleep(max(0.0, args.batch_pause))
+    return 1 if failures else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Simulador HTTP do ESP32 AgroGuardian.")
     parser.add_argument(
@@ -92,6 +237,25 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--interval", type=float, default=3.0)
     parser.add_argument("--sequence-start", type=int, default=int(time.time()))
+    offline = parser.add_argument_group("modo offline (store-and-forward)")
+    offline.add_argument(
+        "--offline-seconds",
+        type=float,
+        default=0.0,
+        help="Simula essa duracao sem rede e envia o acumulado em lotes (0 = modo normal).",
+    )
+    offline.add_argument("--offline-interval", type=float, default=5.0, help="Segundos entre leituras gravadas.")
+    offline.add_argument("--batch-size", type=int, default=40, help="Leituras por lote.")
+    offline.add_argument("--batch-pause", type=float, default=0.6, help="Pausa entre lotes, em segundos.")
+    offline.add_argument(
+        "--restart-after",
+        type=int,
+        default=None,
+        help="Simula um reinicio (novo boot_id) apos essa quantidade de leituras.",
+    )
+    offline.add_argument("--restart-gap", type=float, default=60.0, help="Segundos sem leituras durante o reinicio.")
+    offline.add_argument("--unknown-time", action="store_true", help="Leituras sem horario confiavel.")
+    offline.add_argument("--duplicate-batch", action="store_true", help="Reenvia o primeiro lote para testar duplicatas.")
     args = parser.parse_args()
 
     if not args.api_key:
@@ -104,6 +268,10 @@ def main() -> int:
         "X-Device-ID": args.device_id,
         "X-API-Key": args.api_key,
     }
+    if args.offline_seconds > 0:
+        if args.offline_interval <= 0 or args.batch_size < 1:
+            raise SystemExit("--offline-interval e --batch-size devem ser maiores que zero.")
+        return run_offline_flush(args, headers)
     url = telemetry_url(args.api_url)
     failures = 0
     for index in range(args.count):

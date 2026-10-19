@@ -17,7 +17,6 @@ def heuristic_explanation(payload: Dict[str, Any], risk_score: float) -> Dict[st
     chuva_mm = float(payload.get("chuva_mm", 0) or 0)
     velocidade = float(payload.get("velocidade", 0) or 0)
     inclinacao = float(payload.get("inclinacao", 0) or 0)
-    umidade = float(payload.get("umidade_solo", 0) or 0)
     historico = float(payload.get("historico_sinistros", 0) or 0)
     solo_instavel = int(payload.get("solo_instavel", 0) or 0)
     clima = str(payload.get("clima", "")).lower()
@@ -28,7 +27,6 @@ def heuristic_explanation(payload: Dict[str, Any], risk_score: float) -> Dict[st
     gps_accuracy_m = float(payload.get("gps_accuracy_m", 0) or 0)
 
     fatores = {
-        "Umidade do solo": max(0.0, umidade - 35) * 0.52,
         "Inclinacao": inclinacao * 1.35,
         "Proximidade da agua": max(0.0, 150.0 - distancia_agua) * 0.36,
         "Velocidade": max(0.0, velocidade - 8.0) * 1.22,
@@ -174,19 +172,17 @@ def build_structured_explanation(
     risk_components = risk_components or {}
     iot_snapshot = payload.get("iot_snapshot") if isinstance(payload.get("iot_snapshot"), dict) else {}
     iot_values = iot_snapshot.get("iot") if isinstance(iot_snapshot.get("iot"), dict) else {}
-    soil_values = iot_snapshot.get("soil") if isinstance(iot_snapshot.get("soil"), dict) else {}
 
-    humidity_soil = payload.get("umidade_solo")
     rain_mm = payload.get("chuva_mm")
-    if humidity_soil is not None:
+    if rain_mm is not None:
         _add_factor(
             factors,
-            factor="soil_condition",
-            value=round(float(humidity_soil), 2),
-            unit="%",
-            impact_points=max(0.0, (float(humidity_soil) - 60.0) * 0.38 + float(rain_mm or 0) * 0.45),
-            explanation="Solo/umidade elevaram o risco porque reduzem aderencia e aumentam chance de atolamento.",
-            source="sensor de umidade do solo" if soil_values.get("source") == "sensor" else "context",
+            factor="rain",
+            value=round(float(rain_mm), 2),
+            unit="mm",
+            impact_points=max(0.0, float(rain_mm) * 0.45),
+            explanation="Chuva reduz a aderencia do terreno e aumenta a chance de atolamento.",
+            source="clima",
         )
 
     max_tilt = payload.get("max_tilt_angle", payload.get("inclinacao"))
@@ -349,7 +345,13 @@ def build_structured_explanation(
         item["importance_pct"] = round((item["impact_points"] / total_impact) * 100, 2) if total_impact else 0
 
     main_factor = factors[0]["factor"] if factors else None
-    if factors:
+    safety_reasons = risk_components.get("safety_floor_reasons") or []
+    if safety_reasons:
+        summary = (
+            f"Risco {_risk_level_slug(risk_label)} por regra de seguranca: "
+            f"{'; '.join(safety_reasons)}."
+        )
+    elif factors:
         summary = (
             f"Risco {_risk_level_slug(risk_label)} porque {factors[0]['factor']} "
             f"e outros sinais operacionais adicionaram pressao ao score."

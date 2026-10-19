@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -445,6 +446,7 @@ class IotTelemetry(Base):
         Index("ix_iot_telemetry_equipment_recorded_at", "equipment_id", "recorded_at"),
         Index("ix_iot_telemetry_iot_device_recorded_at", "iot_device_id", "recorded_at"),
         Index("uq_iot_telemetry_device_sequence", "iot_device_id", "sequence_number", unique=True),
+        Index("ix_iot_telemetry_iot_device_boot", "iot_device_id", "boot_id", "uptime_ms"),
         CheckConstraint(
             "data_quality_status IN ('VALID', 'PARTIAL', 'SUSPECT', 'INVALID')",
             name="ck_iot_telemetry_quality_status",
@@ -532,6 +534,16 @@ class IotTelemetry(Base):
     raw_payload = Column(JSON, nullable=False)
     raw_payload_json = Column(JSON_DOCUMENT, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Store-and-forward provenance. NULL on rows written before the batch endpoint.
+    # ingestion_mode: "live" (sent right after the reading) or "buffered" (sent from
+    # the device flash buffer). time_quality: "synced" | "estimated" | "unknown".
+    ingestion_mode = Column(String(20), nullable=True)
+    time_quality = Column(String(20), nullable=True)
+    boot_id = Column(Integer, nullable=True)
+    uptime_ms = Column(BigInteger, nullable=True)
+    batch_id = Column(String(120), nullable=True)
+    reset_reason = Column(String(40), nullable=True)
 
     device = relationship(
         "IotDevice",

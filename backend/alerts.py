@@ -22,11 +22,11 @@ def build_alerts(risk_score: float, payload: Dict) -> List[Dict]:
             "message": "Operacao proxima de agua. Reavaliar rota e bordas da area.",
         })
 
-    if payload["umidade_solo"] >= 75:
+    if float(payload.get("chuva_mm", 0) or 0) >= 20:
         alerts.append({
             "type": "atolamento",
             "severity": "high",
-            "message": "Solo umido aumenta a chance de atolamento.",
+            "message": "Chuva intensa aumenta a chance de atolamento.",
         })
 
     if payload["velocidade"] > 18:

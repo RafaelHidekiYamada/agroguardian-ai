@@ -199,7 +199,7 @@ preservado para auditoria.
 
 Uma leitura recente e `VALID` ou `PARTIAL` alimenta a decisao imediatamente:
 
-- umidade real do solo entra na feature `umidade_solo` do modelo;
+- a umidade do solo nao entra no calculo de risco (sem sensor de solo no projeto); se um dispositivo enviar `soil_moisture_pct`, o valor apenas fica armazenado;
 - temperatura, umidade do ar e pressao locais prevalecem sobre clima regional;
 - GPS influencia o contexto geoespacial sem alterar o cadastro mestre da
   fazenda;

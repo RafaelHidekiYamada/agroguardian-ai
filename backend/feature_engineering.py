@@ -5,7 +5,6 @@ from typing import Any, Dict
 STANDARD_GRAVITY_M_S2 = 9.80665
 
 FEATURE_ORDER = [
-    "umidade_solo",
     "inclinacao",
     "distancia_agua",
     "velocidade",
@@ -119,7 +118,6 @@ def build_features(data: Dict) -> Dict[str, float]:
     operation_code = normalize_operation(str(data.get("operation_type", "campo")))
 
     features = {
-        "umidade_solo": float(data["umidade_solo"]),
         "inclinacao": float(data["inclinacao"]),
         "distancia_agua": float(data["distancia_agua"]),
         "velocidade": float(data["velocidade"]),

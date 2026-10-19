@@ -130,12 +130,8 @@ def test_canonical_payload_persists_prediction_factors_and_events(client: TestCl
         )
         categories = {factor.factor_category for factor in prediction.factors}
         assert {"iot_ultrasonic", "iot_mpu6050", "iot_bme280"}.issubset(categories)
-        assert prediction.input_snapshot_json["umidade_solo"] == 92.0
-        assert prediction.input_snapshot_json["iot_snapshot"]["soil"]["source"] == "sensor"
-        soil_factor = next(
-            factor for factor in telemetry.explanation["factors"] if factor["factor"] == "soil_condition"
-        )
-        assert soil_factor["source"] == "sensor de umidade do solo"
+        assert prediction.input_snapshot_json["iot_snapshot"]["soil"]["source"] == "not_used"
+        assert all(factor["factor"] != "soil_condition" for factor in telemetry.explanation["factors"])
         events = db.query(models.IotEvent).filter(models.IotEvent.telemetry_id == telemetry.id).all()
         assert len(events) >= 3
         assert all(event.risk_prediction_id == prediction.id for event in events)
@@ -363,7 +359,13 @@ def test_jsn_sr04t_thresholds_and_status_flags():
         equipment,
         farm,
     )
-    assert timeout["quality"]["data_quality_status"] == "SUSPECT"
+    # A timeout (no echo) means nothing within range: the reading stays usable.
+    assert timeout["quality"]["data_quality_status"] == "VALID"
+    assert "ULTRASONIC" not in timeout["quality"]["missing_sensors"]
+    assert any("sem eco" in note for note in timeout["quality"]["data_quality_issues"])
+    assert timeout["risk_context"].iot["obstacle_detected"] is False
+    assert timeout["risk_context"].is_usable
+    # An out-of-range echo stays suspect: it may be closer than the sensor minimum.
     assert out_of_range["quality"]["data_quality_status"] == "SUSPECT"
 
 
@@ -388,3 +390,107 @@ def test_critical_physical_signals_raise_risk_and_persist_critical_explanation(c
         assert telemetry is not None
         assert telemetry.explanation["risk_level"] == "critico"
         assert telemetry.explanation["main_factor"] in {"obstacle", "tilt", "movement_anomaly", "possible_impact"}
+
+
+def test_board_tilted_beyond_90_degrees_is_stored_and_scored_instead_of_failing(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "TILT122")
+    payload = {
+        "device_id": device_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "sequence_number": 5120,
+        "operation_type": "campo",
+        "firmware_version": "agroguardian-esp32-2.0.0",
+        "mpu6050": {
+            "accel_x": 9.524,
+            "accel_y": 1.961,
+            "accel_z": -1.511,
+            "gyro_x": -0.73,
+            "gyro_y": -0.96,
+            "gyro_z": 0.11,
+            "pitch": -122.4,
+            "roll": -12.7,
+            "inclination_deg": 122.4,
+        },
+        "ultrasonic": {"sensor_model": "HC-SR04", "distance_cm": 20.6},
+    }
+
+    response = client.post(
+        ESP_TELEMETRY_ENDPOINT,
+        json=payload,
+        headers={"X-Device-ID": device_id, "X-API-Key": api_key},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["risk_updated"] is True
+
+    latest = client.get("/api/v1/equipments/1/telemetry/latest", headers=_admin_headers(client))
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["telemetry"]["inclination_deg"] == pytest.approx(122.4)
+
+
+def test_soil_moisture_is_stored_but_never_changes_the_risk_score(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "NOSOIL")
+    scores = []
+    for sequence, soil in ((1, 5.0), (2, 95.0)):
+        payload = _physical_payload(device_id, sequence)
+        payload["soil_moisture_pct"] = soil
+        response = client.post(
+            ESP_TELEMETRY_ENDPOINT,
+            headers=_device_headers(device_id, api_key),
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["risk_updated"] is True
+        scores.append(body["risk_score"])
+
+    assert scores[0] == pytest.approx(scores[1])
+
+
+def test_risk_model_does_not_use_soil_moisture_as_a_feature():
+    from backend.feature_engineering import FEATURE_ORDER
+    from backend.ml_registry import load_runtime_model
+    from backend.risk_model import FEATURES
+
+    assert "umidade_solo" not in FEATURES
+    assert "umidade_solo" not in FEATURE_ORDER
+    bundle = load_runtime_model()
+    assert "umidade_solo" not in (bundle.get("feature_names") or [])
+
+
+def test_ultrasonic_timeout_does_not_suspend_the_risk_calculation(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "NOECHO")
+    payload = _physical_payload(device_id, 1)
+    payload["ultrasonic"] = {"sensor_model": "HC-SR04", "timeout": True, "out_of_range": False}
+
+    response = client.post(
+        ESP_TELEMETRY_ENDPOINT,
+        headers=_device_headers(device_id, api_key),
+        json=payload,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["risk_updated"] is True
+    assert body["data_quality_status"] == "VALID"
+    assert body["risk_level"] == "Baixo"
+
+
+def test_payload_with_only_an_ultrasonic_timeout_is_still_rejected(client: TestClient):
+    device_id, api_key, _ = _create_device(client, "ONLYNOECHO")
+    payload = {
+        "device_id": device_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "sequence_number": 1,
+        "ultrasonic": {"sensor_model": "HC-SR04", "timeout": True},
+    }
+
+    response = client.post(
+        ESP_TELEMETRY_ENDPOINT,
+        headers=_device_headers(device_id, api_key),
+        json=payload,
+    )
+
+    assert response.status_code == 422, response.text

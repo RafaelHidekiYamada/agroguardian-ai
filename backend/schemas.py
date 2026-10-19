@@ -60,7 +60,8 @@ class TelemetryInput(BaseModel):
     region: str = Field(default="Guarulhos - SP")
     operation_type: str = Field(default="campo")
     clima: str = Field(default="chuva")
-    umidade_solo: float = Field(ge=0, le=100)
+    # Legado: mantido por compatibilidade da API/banco. Nao entra no calculo de risco.
+    umidade_solo: float = Field(default=0.0, ge=0, le=100)
     inclinacao: float = Field(ge=0, le=90)
     distancia_agua: float = Field(ge=0, le=10000)
     velocidade: float = Field(ge=0, le=200)
@@ -612,6 +613,52 @@ class IotTelemetryResponse(BaseModel):
     iot_used: bool = True
     recorded_at: datetime | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
+    message: str | None = None
+
+
+class IotBatchInput(BaseModel):
+    """Envelope of a store-and-forward batch.
+
+    Readings stay raw dicts on purpose: each item is validated on its own against
+    IotTelemetryInput, so one malformed reading is rejected alone instead of
+    failing the whole batch with a 422.
+    """
+
+    device_id: str = Field(min_length=1, max_length=120)
+    batch_id: str | None = Field(default=None, max_length=120)
+    firmware_version: str | None = Field(default=None, max_length=80)
+    operation_type: str = "campo"
+    more_pending: bool = False
+    readings: list[dict[str, Any]] = Field(min_length=1)
+
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+
+
+class IotBatchItemResult(BaseModel):
+    sequence_number: int | None = None
+    # accepted | duplicate | rejected
+    result: str
+    telemetry_id: int | None = None
+    # Only meaningful for "rejected": False means "retry later", True means "drop it".
+    permanent: bool | None = None
+    reason: str | None = None
+    recorded_at: datetime | None = None
+    time_quality: str | None = None
+
+
+class IotBatchResponse(BaseModel):
+    status: str
+    batch_id: str | None = None
+    device_id: str
+    received_at: datetime
+    accepted: int = 0
+    duplicates: int = 0
+    rejected: int = 0
+    results: list[IotBatchItemResult] = Field(default_factory=list)
+    risk_updated: bool = False
+    risk_score: float | None = None
+    risk_level: str | None = None
+    signal_status: str | None = None
     message: str | None = None
 
 

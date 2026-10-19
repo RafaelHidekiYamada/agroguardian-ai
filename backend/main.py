@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 from sqlalchemy import desc, or_
 
 from .geointelligence import build_geo_context
@@ -30,6 +31,9 @@ from .schemas import (
     ESPTelemetryInput,
     IotTelemetryInput,
     IotTelemetryResponse,
+    IotBatchInput,
+    IotBatchItemResult,
+    IotBatchResponse,
     IotDeviceCreate,
     IotDeviceUpdate,
     IotDeviceResponse,
@@ -98,6 +102,7 @@ from .security import (
     create_access_token,
     get_current_user,
     normalize_role,
+    require_any_permission,
     require_permission,
     require_roles,
 )
@@ -105,10 +110,12 @@ from .iot_processing import (
     apply_risk_context,
     build_iot_context,
     build_iot_events,
+    build_telemetry_segments,
     current_device_status,
     current_telemetry_status,
     normalize_timestamp,
     risk_context_from_telemetry,
+    signal_status,
 )
 from .integration_hub import (
     build_operational_context,
@@ -131,12 +138,19 @@ class IoTPayloadSizeMiddleware:
     """Validate ESP32 content type and body size before FastAPI parses JSON."""
 
     _paths = {"/api/v1/telemetry/esp", "/api/v1/iot/telemetry"}
+    # Store-and-forward batches are larger by design and have their own limit.
+    _batch_paths = {"/api/v1/telemetry/esp/batch"}
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] not in self._paths:
+        is_batch = scope["type"] == "http" and scope["path"] in self._batch_paths
+        if (
+            scope["type"] != "http"
+            or scope["method"] != "POST"
+            or (scope["path"] not in self._paths and not is_batch)
+        ):
             await self.app(scope, receive, send)
             return
 
@@ -149,7 +163,7 @@ class IoTPayloadSizeMiddleware:
             )(scope, receive, send)
             return
 
-        max_bytes = settings.iot_max_payload_bytes
+        max_bytes = settings.iot_batch_max_payload_bytes if is_batch else settings.iot_max_payload_bytes
         try:
             content_length = int(headers.get(b"content-length", b"0"))
         except ValueError:
@@ -724,6 +738,23 @@ def _serialize_iot_telemetry(row: models.IotTelemetry) -> dict[str, Any]:
         "timestamp": row.timestamp.isoformat() if row.timestamp else None,
         "recorded_at": recorded_at.isoformat() if recorded_at else None,
         "received_at": row.received_at.isoformat() if row.received_at else None,
+        "ingestion_mode": row.ingestion_mode,
+        "time_quality": row.time_quality,
+        "boot_id": row.boot_id,
+        "uptime_ms": row.uptime_ms,
+        "batch_id": row.batch_id,
+        "reset_reason": row.reset_reason,
+        "ingestion_delay_seconds": (
+            round(
+                max(
+                    0.0,
+                    (normalize_timestamp(row.received_at) - normalize_timestamp(recorded_at)).total_seconds(),
+                ),
+                2,
+            )
+            if row.received_at and recorded_at
+            else None
+        ),
         "temperature_c": row.temperature_c,
         "humidity_pct": row.humidity_pct,
         "pressure_hpa": row.pressure_hpa,
@@ -1161,13 +1192,9 @@ def _normalize_esp_payload(payload: ESPTelemetryInput, db: Session) -> Telemetry
     ]
     inclinacao = max(inclinacoes) if inclinacoes else 0.0
 
-    umidade_solo = payload.umidade_solo
-    if umidade_solo is None:
-        umidade_solo = min(100.0, max(0.0, float(payload.umidade_ar or 65) * 0.72 + float(payload.chuva_mm or 0) * 1.6))
-
     solo_instavel = payload.solo_instavel
     if solo_instavel is None:
-        solo_instavel = int(float(umidade_solo) >= 80 and (float(payload.chuva_mm or 0) >= 5 or inclinacao >= 10))
+        solo_instavel = int(float(payload.chuva_mm or 0) >= 10 and inclinacao >= 10)
 
     historico = payload.historico_sinistros
     if historico is None:
@@ -1179,7 +1206,6 @@ def _normalize_esp_payload(payload: ESPTelemetryInput, db: Session) -> Telemetry
         region=payload.region,
         operation_type=payload.operation_type,
         clima=_infer_climate_from_esp(payload),
-        umidade_solo=float(umidade_solo),
         inclinacao=float(inclinacao),
         distancia_agua=float(payload.distancia_agua if payload.distancia_agua is not None else 999.0),
         velocidade=float(payload.velocidade or 0.0),
@@ -2181,20 +2207,21 @@ def _authenticate_iot_device(
     return device
 
 
-def _check_device_rate_limit(device_id: str) -> None:
-    limit = max(1, int(settings.iot_rate_limit_per_minute))
+def _check_device_rate_limit(device_id: str, *, limit: int | None = None, bucket: str | None = None) -> None:
+    limit = max(1, int(limit if limit is not None else settings.iot_rate_limit_per_minute))
+    key = bucket or device_id
     now = datetime.utcnow().timestamp()
     window_start = now - 60.0
-    recent = [item for item in DEVICE_RATE_LIMIT.get(device_id, []) if item >= window_start]
+    recent = [item for item in DEVICE_RATE_LIMIT.get(key, []) if item >= window_start]
     if len(recent) >= limit:
-        DEVICE_RATE_LIMIT[device_id] = recent
+        DEVICE_RATE_LIMIT[key] = recent
         raise HTTPException(
             status_code=429,
             detail="Rate limit do dispositivo excedido.",
             headers={"Retry-After": "60"},
         )
     recent.append(now)
-    DEVICE_RATE_LIMIT[device_id] = recent
+    DEVICE_RATE_LIMIT[key] = recent
 
 
 def _persist_iot_telemetry(
@@ -2225,6 +2252,14 @@ def _persist_iot_telemetry(
         raw_payload=redact_sensitive_fields(payload.model_dump(mode="json")),
         raw_payload_json=redact_sensitive_fields(payload.model_dump(mode="json")),
     )
+    # Provenance sent by store-and-forward firmware as extra fields. Plain payloads
+    # simply leave boot/uptime/time quality empty, as before.
+    extras = payload.model_extra or {}
+    declared_quality = str(extras.get("time_quality") or "").strip().lower()
+    record.ingestion_mode = "live"
+    record.boot_id = _optional_int(extras.get("boot_id"))
+    record.uptime_ms = _optional_int(extras.get("uptime_ms"))
+    record.time_quality = declared_quality if declared_quality in _BATCH_TIME_QUALITIES else None
     db.add(record)
 
     for field in (
@@ -2602,6 +2637,437 @@ def ingest_esp_telemetry(
     return _ingest_iot_telemetry(payload, x_device_id, x_api_key, db)
 
 
+# --- Store-and-forward batch ingestion --------------------------------------
+
+_BATCH_TIME_QUALITIES = {"synced", "estimated", "unknown"}
+# A device clock before this is a never-synchronised ESP32 (1970), not a real time.
+_MIN_PLAUSIBLE_DEVICE_TIME = datetime(2020, 1, 1, tzinfo=timezone.utc)
+# Quality events that would only add noise when replayed from a backlog.
+_BUFFERED_SKIPPED_EVENT_TYPES = {"SENSOR_PARTIAL", "SENSOR_INVALID"}
+_DUPLICATE_VALUE_TOLERANCE = 0.05
+
+
+class _BatchItemRejected(Exception):
+    def __init__(self, reason: str, *, permanent: bool = True):
+        super().__init__(reason)
+        self.reason = reason
+        self.permanent = permanent
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _validation_reason(exc: ValidationError) -> str:
+    parts = []
+    for error in exc.errors()[:5]:
+        location = ".".join(str(item) for item in error.get("loc", ()))
+        parts.append(f"{location}: {error.get('msg', 'invalido')}")
+    return "; ".join(parts)[:300] or "leitura invalida"
+
+
+def _prepare_batch_item(
+    raw: dict[str, Any],
+    device: models.IotDevice,
+    batch: IotBatchInput,
+    received_at_utc: datetime,
+) -> tuple[IotTelemetryInput, dict[str, Any]]:
+    item = dict(raw)
+    item_device = item.get("device_id")
+    if item_device not in (None, "") and str(item_device).strip() != device.device_id:
+        raise _BatchItemRejected("device_id do item diverge do lote")
+    item["device_id"] = device.device_id
+    if batch.firmware_version:
+        item.setdefault("firmware_version", batch.firmware_version)
+    item.setdefault("operation_type", batch.operation_type)
+
+    declared_quality = str(item.get("time_quality") or "").strip().lower()
+    provenance = {
+        "boot_id": _optional_int(item.get("boot_id")),
+        "uptime_ms": _optional_int(item.get("uptime_ms")),
+        "reset_reason": (str(item.get("reset_reason") or "").strip()[:40] or None),
+    }
+    payload = IotTelemetryInput(**item)
+    if payload.sequence_number is None:
+        raise _BatchItemRejected("sequence_number e obrigatorio em leituras de lote")
+
+    time_quality = declared_quality if declared_quality in _BATCH_TIME_QUALITIES else None
+    if payload.timestamp is None or normalize_timestamp(payload.timestamp) < _MIN_PLAUSIBLE_DEVICE_TIME:
+        # No usable device time: the reading is kept, dated at arrival and marked.
+        time_quality = "unknown"
+        payload.timestamp = received_at_utc
+    elif time_quality is None:
+        time_quality = "estimated"
+    provenance["time_quality"] = time_quality
+    return payload, provenance
+
+
+def _find_sequence(db: Session, device_row_id: int, sequence_number: int) -> models.IotTelemetry | None:
+    return (
+        db.query(models.IotTelemetry)
+        .filter(
+            models.IotTelemetry.iot_device_id == device_row_id,
+            models.IotTelemetry.sequence_number == sequence_number,
+        )
+        .first()
+    )
+
+
+def _batch_duplicate_matches(
+    existing: models.IotTelemetry,
+    provenance: dict[str, Any],
+    raw_values: dict[str, Any],
+) -> bool:
+    """True when a stored row is the same reading, False when the sequence was reused.
+
+    The boot and uptime pair identifies a reading even when it first arrived
+    through the live endpoint with a different payload shape. Without it the
+    sensor values are compared.
+    """
+    if (
+        existing.boot_id is not None
+        and existing.uptime_ms is not None
+        and provenance.get("boot_id") is not None
+        and provenance.get("uptime_ms") is not None
+    ):
+        return existing.boot_id == provenance["boot_id"] and existing.uptime_ms == provenance["uptime_ms"]
+    for field in ("temperature_c", "humidity_pct", "pressure_hpa", "accel_x", "accel_y", "accel_z", "distance_cm"):
+        stored = getattr(existing, field, None)
+        incoming = raw_values.get(field)
+        if stored is None and incoming is None:
+            continue
+        if stored is None or incoming is None:
+            return False
+        if abs(float(stored) - float(incoming)) > _DUPLICATE_VALUE_TOLERANCE:
+            return False
+    return True
+
+
+def _batch_result(
+    sequence_number: int | None,
+    result: str,
+    *,
+    record: models.IotTelemetry | None = None,
+    permanent: bool | None = None,
+    reason: str | None = None,
+    time_quality: str | None = None,
+) -> IotBatchItemResult:
+    return IotBatchItemResult(
+        sequence_number=sequence_number,
+        result=result,
+        telemetry_id=record.id if record is not None else None,
+        permanent=permanent,
+        reason=reason,
+        recorded_at=(record.recorded_at or record.timestamp) if record is not None else None,
+        time_quality=time_quality if time_quality is not None else (record.time_quality if record is not None else None),
+    )
+
+
+def _existing_batch_result(
+    existing: models.IotTelemetry,
+    sequence_number: int,
+    provenance: dict[str, Any],
+    raw_values: dict[str, Any],
+) -> IotBatchItemResult:
+    if _batch_duplicate_matches(existing, provenance, raw_values):
+        return _batch_result(sequence_number, "duplicate", record=existing)
+    return _batch_result(
+        sequence_number,
+        "rejected",
+        permanent=True,
+        reason="sequence_number ja utilizado com leitura diferente",
+    )
+
+
+def _process_batch_item(
+    db: Session,
+    device: models.IotDevice,
+    equipment: models.Equipment,
+    farm: models.Farm,
+    batch: IotBatchInput,
+    raw: dict[str, Any],
+    received_at: datetime,
+) -> tuple[IotBatchItemResult, models.IotTelemetry | None, dict[str, Any] | None]:
+    raw_sequence = _optional_int(raw.get("sequence_number")) if isinstance(raw, dict) else None
+    try:
+        payload, provenance = _prepare_batch_item(raw, device, batch, received_at.replace(tzinfo=timezone.utc))
+    except _BatchItemRejected as exc:
+        return _batch_result(raw_sequence, "rejected", permanent=exc.permanent, reason=exc.reason), None, None
+    except ValidationError as exc:
+        return _batch_result(raw_sequence, "rejected", permanent=True, reason=_validation_reason(exc)), None, None
+    except ValueError as exc:
+        return _batch_result(raw_sequence, "rejected", permanent=True, reason=str(exc)[:300]), None, None
+
+    sequence_number = int(payload.sequence_number)
+    time_quality = provenance["time_quality"]
+    context = build_iot_context(payload, equipment, farm, buffered=True)
+    quality = context["quality"]
+    if quality["data_quality_status"] == "INVALID":
+        reason = "; ".join(quality["data_quality_issues"]) or "leitura sem dados validos"
+        return (
+            _batch_result(sequence_number, "rejected", permanent=True, reason=reason[:300], time_quality=time_quality),
+            None,
+            None,
+        )
+
+    existing = _find_sequence(db, device.id, sequence_number)
+    if existing is not None:
+        return _existing_batch_result(existing, sequence_number, provenance, context["raw_values"]), None, None
+
+    try:
+        record = _persist_iot_telemetry(db, device, payload, context)
+        record.ingestion_mode = "buffered"
+        record.time_quality = time_quality
+        record.boot_id = provenance["boot_id"]
+        record.uptime_ms = provenance["uptime_ms"]
+        record.batch_id = batch.batch_id
+        record.reset_reason = provenance["reset_reason"]
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = _find_sequence(db, device.id, sequence_number)
+        if existing is not None:
+            return _existing_batch_result(existing, sequence_number, provenance, context["raw_values"]), None, None
+        # Not a duplicate: a constraint rejects this reading and retrying cannot fix it.
+        logger.warning(
+            "Leitura de lote recusada por restricao do banco",
+            extra={"device_id": device.device_id, "sequence_number": sequence_number},
+        )
+        return (
+            _batch_result(
+                sequence_number,
+                "rejected",
+                permanent=True,
+                reason="leitura viola restricao do banco",
+                time_quality=time_quality,
+            ),
+            None,
+            None,
+        )
+    return _batch_result(sequence_number, "accepted", record=record), record, context
+
+
+def _persist_buffered_events(
+    db: Session,
+    device: models.IotDevice,
+    record: models.IotTelemetry,
+    context: dict[str, Any],
+) -> None:
+    """Keep real sensor events from a backlog without alerts or a new prediction."""
+    risk_context = replace(
+        context["risk_context"],
+        telemetry_id=record.id,
+        received_at=normalize_timestamp(record.received_at),
+    )
+    recorded_at = normalize_timestamp(record.recorded_at or record.timestamp)
+    for event in build_iot_events(risk_context):
+        if event["event_type"] in _BUFFERED_SKIPPED_EVENT_TYPES:
+            continue
+        event = dict(event)
+        event["description"] = f"{event['description']} (leitura em buffer de {recorded_at.isoformat()})"
+        db.add(
+            models.IotEvent(
+                device_id=device.id,
+                equipment_id=device.equipment_id,
+                telemetry_id=record.id,
+                risk_prediction_id=None,
+                **event,
+            )
+        )
+
+
+def _decide_batch_risk(
+    db: Session,
+    device: models.IotDevice,
+    record: models.IotTelemetry,
+    context: dict[str, Any],
+) -> tuple[bool, float | None, str | None]:
+    """Run the risk decision for the newest live reading of a batch.
+
+    Mirrors the live endpoint: the reading is already committed, so a failure
+    here only means the prediction is skipped for this attempt.
+    """
+    risk_context = replace(
+        context["risk_context"],
+        telemetry_id=record.id,
+        received_at=normalize_timestamp(record.received_at),
+    )
+    preview_events = build_iot_events(risk_context)
+    previous = _recent_iot_prediction(db, device.id, excluding_telemetry_id=record.id)
+    previous_score = previous.risk_score if previous else None
+    previous_level = previous.risk_level if previous else None
+    must_predict = _prediction_interval_elapsed(previous) or any(
+        event["severity"] == "CRITICAL" for event in preview_events
+    )
+    if not must_predict:
+        return False, previous_score, previous_level
+    try:
+        telemetry_input_data = context["telemetry_input"].model_dump()
+        telemetry_input_data["telemetry_id"] = record.id
+        telemetry_input_data["iot_snapshot"] = risk_context.snapshot()
+        prediction = _predict(
+            TelemetryInput(**telemetry_input_data),
+            db,
+            commit=False,
+            iot_telemetry_record=record,
+            audit=False,
+        )
+        event_rows = _persist_iot_events_and_alerts(
+            db,
+            device=device,
+            telemetry=record,
+            risk_context=risk_context,
+            prediction=prediction,
+        )
+        if any(event.severity == "CRITICAL" for event in event_rows):
+            db.add(
+                models.AuditLog(
+                    actor=device.device_id,
+                    action="iot_critical_event",
+                    payload={
+                        "device_id": device.device_id,
+                        "equipment_id": device.equipment_id,
+                        "telemetry_id": record.id,
+                        "events": [event.event_type for event in event_rows if event.severity == "CRITICAL"],
+                        "risk_score": prediction.risk_score,
+                    },
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Falha na decisao de risco para telemetria de lote ja persistida",
+            extra={"telemetry_id": record.id, "device_id": device.device_id},
+        )
+        return False, previous_score, previous_level
+    return True, prediction.risk_score, prediction.risk_label
+
+
+def _ingest_iot_batch(
+    batch: IotBatchInput,
+    x_device_id: str | None,
+    x_api_key: str | None,
+    db: Session,
+) -> IotBatchResponse:
+    if len(batch.readings) > settings.iot_batch_max_readings:
+        raise HTTPException(status_code=413, detail="Lote de telemetria com leituras demais.")
+
+    device = _authenticate_iot_device(db, IotTelemetryInput(device_id=batch.device_id), x_device_id, x_api_key)
+    equipment = db.query(models.Equipment).filter(models.Equipment.id == device.equipment_id).first()
+    if not equipment:
+        raise HTTPException(status_code=409, detail="Equipamento vinculado ao dispositivo nao existe.")
+    farm = db.query(models.Farm).filter(models.Farm.id == equipment.farm_id).first()
+    if not farm:
+        raise HTTPException(status_code=409, detail="Fazenda vinculada ao equipamento nao existe.")
+
+    # One request is one hit, in a bucket of its own so a backlog flush never
+    # starves the live endpoint (and vice versa).
+    _check_device_rate_limit(
+        device.device_id,
+        limit=settings.iot_batch_rate_limit_per_minute,
+        bucket=f"{device.device_id}:batch",
+    )
+
+    received_at = datetime.utcnow()
+    results: list[IotBatchItemResult] = []
+    persisted: list[tuple[models.IotTelemetry, dict[str, Any]]] = []
+    for index, raw in enumerate(batch.readings):
+        try:
+            result, record, context = _process_batch_item(db, device, equipment, farm, batch, raw, received_at)
+        except Exception:
+            # Storage problem (not a bad reading): stop here. The remaining items are
+            # reported as retryable so the device keeps them and resumes from this one.
+            db.rollback()
+            logger.exception(
+                "Falha ao gravar leitura de lote",
+                extra={"device_id": device.device_id, "batch_id": batch.batch_id},
+            )
+            sequence = _optional_int(raw.get("sequence_number")) if isinstance(raw, dict) else None
+            results.append(_batch_result(sequence, "rejected", permanent=False, reason="falha_temporaria"))
+            for pending in batch.readings[index + 1 :]:
+                pending_sequence = _optional_int(pending.get("sequence_number")) if isinstance(pending, dict) else None
+                results.append(
+                    _batch_result(pending_sequence, "rejected", permanent=False, reason="nao_processado")
+                )
+            break
+        results.append(result)
+        if record is not None and context is not None:
+            persisted.append((record, context))
+
+    risk_updated = False
+    risk_score: float | None = None
+    risk_level: str | None = None
+    if persisted:
+        # Only the newest live reading may drive the risk model; older ones keep
+        # their sensor events but never raise alerts for a situation long gone.
+        decision_index = None
+        for position in range(len(persisted) - 1, -1, -1):
+            if persisted[position][1]["risk_context"].is_usable:
+                decision_index = position
+                break
+        try:
+            for position, (record, context) in enumerate(persisted):
+                if position != decision_index:
+                    _persist_buffered_events(db, device, record, context)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Falha ao gravar eventos de lote", extra={"device_id": device.device_id})
+        if decision_index is not None:
+            record, context = persisted[decision_index]
+            risk_updated, risk_score, risk_level = _decide_batch_risk(db, device, record, context)
+
+    accepted = sum(1 for item in results if item.result == "accepted")
+    duplicates = sum(1 for item in results if item.result == "duplicate")
+    rejected = sum(1 for item in results if item.result == "rejected")
+
+    if accepted or duplicates:
+        # The device just talked to us: that is contact even if every reading is old.
+        device.last_seen_at = datetime.utcnow()
+        if str(device.status).upper() != "MAINTENANCE":
+            device.status = "ONLINE"
+        if batch.firmware_version:
+            device.firmware_version = batch.firmware_version
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Falha ao atualizar contato do dispositivo", extra={"device_id": device.device_id})
+
+    return IotBatchResponse(
+        status="accepted" if rejected == 0 else "partial",
+        batch_id=batch.batch_id,
+        device_id=device.device_id,
+        received_at=received_at,
+        accepted=accepted,
+        duplicates=duplicates,
+        rejected=rejected,
+        results=results,
+        risk_updated=risk_updated,
+        risk_score=risk_score,
+        risk_level=risk_level,
+        signal_status=signal_status(device.last_seen_at),
+        message=f"{accepted} aceitas, {duplicates} duplicadas, {rejected} recusadas.",
+    )
+
+
+@app.post("/api/v1/telemetry/esp/batch", response_model=IotBatchResponse)
+def ingest_esp_telemetry_batch(
+    batch: IotBatchInput,
+    x_device_id: str | None = Header(default=None, alias="X-Device-ID"),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+):
+    return _ingest_iot_batch(batch, x_device_id, x_api_key, db)
+
+
 @app.get("/api/v1/telemetry/sensors/latest")
 def latest_sensor_readings(
     limit: int = Query(50, ge=1, le=500),
@@ -2617,7 +3083,6 @@ def simulate(payload: ScenarioInput, db: Session = Depends(get_db)):
     simulated["clima"] = "chuva" if payload.scenario_name else payload.clima
     simulated["chuva_mm"] = max(payload.chuva_mm, weather.get("rain_mm_1h", 0) * 4 + 10)
     simulated["velocidade"] = max(0, payload.velocidade - 2)
-    simulated["umidade_solo"] = min(100, payload.umidade_solo + 8)
 
     sim_input = TelemetryInput(**simulated)
     return _predict(sim_input, db)
@@ -2740,7 +3205,10 @@ def dashboard_audit(
 
 
 @app.get("/api/v1/farms")
-def list_farms(db: Session = Depends(get_db)):
+def list_farms(
+    current_user=Depends(require_any_permission("farms.view", "equipments.view")),
+    db: Session = Depends(get_db),
+):
     return list_farms_data(db)
 
 
@@ -2944,6 +3412,43 @@ def get_iot_device(
         raise HTTPException(status_code=404, detail="Dispositivo nao encontrado.")
     _assert_equipment_scope(current_user, device.equipment)
     return _serialize_iot_device(device)
+
+
+@app.get("/api/v1/iot/devices/{device_id}/telemetry/segments")
+def get_iot_device_telemetry_segments(
+    device_id: str,
+    hours: int = Query(24, ge=1, le=168),
+    limit: int = Query(5000, ge=1, le=20000),
+    current_user=Depends(require_permission("iot.devices.view")),
+    db: Session = Depends(get_db),
+):
+    """Timeline of a device: online, offline com coleta, reiniciou and sem dados."""
+    device = _iot_device_by_reference(db, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo nao encontrado.")
+    _assert_equipment_scope(current_user, device.equipment)
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(tzinfo=None)
+    rows = (
+        db.query(models.IotTelemetry)
+        .filter(
+            models.IotTelemetry.iot_device_id == device.id,
+            models.IotTelemetry.timestamp >= since,
+        )
+        .order_by(desc(models.IotTelemetry.timestamp), desc(models.IotTelemetry.id))
+        .limit(limit)
+        .all()
+    )
+    rows.reverse()
+    timeline = build_telemetry_segments(rows)
+    return {
+        "device_id": device.device_id,
+        "window_hours": hours,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "signal_status": signal_status(device.last_seen_at),
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+        "truncated": len(rows) >= limit,
+        **timeline,
+    }
 
 
 @app.get(

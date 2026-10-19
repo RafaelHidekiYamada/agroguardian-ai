@@ -162,3 +162,16 @@ def test_admin_can_provision_farm_equipment_and_esp32_from_an_empty_onboarding_p
         assert telemetry is not None
         assert telemetry.latitude == -22.91
         assert telemetry.soil_moisture_pct == 73.5
+
+
+def test_farms_listing_requires_authentication(client: TestClient):
+    response = client.get("/api/v1/farms")
+
+    assert response.status_code == 401
+
+
+def test_farms_listing_is_available_to_authenticated_admin(client: TestClient):
+    response = client.get("/api/v1/farms", headers=_admin_headers(client))
+
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
