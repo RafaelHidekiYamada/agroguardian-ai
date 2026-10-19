@@ -1,0 +1,8 @@
+{
+  "name": "AgroTelemetryStore",
+  "version": "1.0.0",
+  "description": "Buffer circular de telemetria (store-and-forward) para o ESP32 do AgroGuardian",
+  "build": { "libArchive": false },
+  "platforms": "*",
+  "frameworks": "*"
+}
