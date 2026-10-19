@@ -155,6 +155,8 @@ def evaluate_iot_quality(
     payload: IotTelemetryInput,
     timestamp: datetime,
     derived: dict[str, Any],
+    *,
+    buffered: bool = False,
 ) -> dict[str, Any]:
     missing_sensors: list[str] = []
     issues: list[str] = []
@@ -176,7 +178,13 @@ def evaluate_iot_quality(
     age = telemetry_age_seconds(timestamp)
     freshness = telemetry_status(age)
     if freshness != "LIVE":
-        issues.append(f"telemetria {freshness.lower()} ({int(age)} segundos)")
+        if buffered:
+            # A reading delivered from the device buffer is old by design. Its age
+            # is recorded as a note, not as a data-quality issue, so a faithful
+            # historical reading is not downgraded to SUSPECT.
+            notes.append(f"leitura em buffer entregue com atraso de {int(age)} segundos")
+        else:
+            issues.append(f"telemetria {freshness.lower()} ({int(age)} segundos)")
 
     future_delta = (normalize_timestamp(timestamp) - utcnow()).total_seconds()
     if future_delta > settings.iot_future_timestamp_tolerance_seconds:
@@ -217,7 +225,13 @@ def evaluate_iot_quality(
     }
 
 
-def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> dict[str, Any]:
+def build_iot_context(
+    payload: IotTelemetryInput,
+    equipment: Any,
+    farm: Any,
+    *,
+    buffered: bool = False,
+) -> dict[str, Any]:
     timestamp = normalize_timestamp(payload.timestamp)
     bme = payload.bme280
     mpu = payload.mpu6050
@@ -239,7 +253,7 @@ def build_iot_context(payload: IotTelemetryInput, equipment: Any, farm: Any) -> 
         gyro_abnormal_dps=settings.gyro_abnormal_dps,
         tilt_high_deg=settings.iot_inclination_high_deg,
     )
-    quality = evaluate_iot_quality(payload, timestamp, mpu_features)
+    quality = evaluate_iot_quality(payload, timestamp, mpu_features, buffered=buffered)
 
     distance_cm = ultrasonic.distance_cm if ultrasonic else None
     obstacle_detected = getattr(ultrasonic, "detected", None) if ultrasonic else None
@@ -531,3 +545,179 @@ def build_iot_events(context: RiskContext) -> list[dict[str, Any]]:
         }
         for event_type, severity, value, unit, description in events
     ]
+
+
+# --- Store-and-forward: signal status and timeline segments -----------------
+
+
+def signal_status(last_contact: datetime | None, *, now: datetime | None = None) -> str:
+    """COM_SINAL while the device reached the backend recently, SEM_SINAL otherwise.
+
+    "Contact" is the last time the backend heard from the device (live reading or
+    batch), not the time a reading was recorded: a device that was offline but
+    kept collecting data is SEM_SINAL until its batch arrives.
+    """
+    if last_contact is None:
+        return "SEM_SINAL"
+    age = telemetry_age_seconds(last_contact, now=now)
+    limit = max(settings.iot_stale_seconds, settings.iot_offline_threshold_seconds)
+    return "COM_SINAL" if age <= limit else "SEM_SINAL"
+
+
+def _row_time(row: Any) -> datetime:
+    return normalize_timestamp(getattr(row, "recorded_at", None) or getattr(row, "timestamp", None))
+
+
+def _row_delay_seconds(row: Any) -> float:
+    received = getattr(row, "received_at", None)
+    if received is None:
+        return 0.0
+    return max(0.0, (normalize_timestamp(received) - _row_time(row)).total_seconds())
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def build_telemetry_segments(
+    rows: list[Any],
+    *,
+    now: datetime | None = None,
+    gap_seconds: int | None = None,
+    buffered_delay_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Describe a device timeline as segments that tell the operator what happened.
+
+    Segment kinds:
+      - ``online``: readings delivered live.
+      - ``offline_com_coleta``: readings collected while offline and delivered later
+        from the device buffer (no data was lost).
+      - ``reiniciou``: the boot_id changed between two consecutive readings.
+      - ``sem_dados``: no readings for longer than ``gap_seconds`` (or readings
+        discarded by the device buffer: ``missing_readings``). The last segment is
+        open (``end`` is null) when the device is currently silent.
+
+    Rows whose time is unknown (``time_quality == "unknown"``) are listed in the
+    summary but never used to infer gaps, because their recorded_at is the arrival time.
+    """
+    now = normalize_timestamp(now) if now is not None else utcnow()
+    gap_limit = int(gap_seconds if gap_seconds is not None else settings.iot_gap_seconds)
+    delay_limit = int(
+        buffered_delay_seconds if buffered_delay_seconds is not None else settings.iot_buffered_delay_seconds
+    )
+    ordered = sorted(
+        rows,
+        key=lambda row: (_row_time(row), getattr(row, "sequence_number", None) or 0),
+    )
+
+    segments: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    unknown_time_readings = 0
+    previous: Any = None
+
+    def close_current() -> None:
+        nonlocal current
+        if current is not None:
+            segments.append(current)
+            current = None
+
+    for row in ordered:
+        time_unknown = getattr(row, "time_quality", None) == "unknown"
+        if time_unknown:
+            unknown_time_readings += 1
+        buffered = getattr(row, "ingestion_mode", None) == "buffered" and _row_delay_seconds(row) > delay_limit
+        kind = "offline_com_coleta" if buffered else "online"
+        recorded_at = _row_time(row)
+        received_at = getattr(row, "received_at", None)
+        received_at = normalize_timestamp(received_at) if received_at is not None else None
+
+        if previous is not None and not time_unknown and getattr(previous, "time_quality", None) != "unknown":
+            previous_time = _row_time(previous)
+            gap = (recorded_at - previous_time).total_seconds()
+            previous_seq = getattr(previous, "sequence_number", None)
+            sequence = getattr(row, "sequence_number", None)
+            missing = 0
+            if previous_seq is not None and sequence is not None and sequence - previous_seq > 1:
+                missing = sequence - previous_seq - 1
+            previous_boot = getattr(previous, "boot_id", None)
+            boot = getattr(row, "boot_id", None)
+            restarted = previous_boot is not None and boot is not None and boot != previous_boot
+            if gap > gap_limit or missing > 0:
+                close_current()
+                segments.append(
+                    {
+                        "kind": "sem_dados",
+                        "start": _iso(previous_time),
+                        "end": _iso(recorded_at),
+                        "duration_seconds": round(max(0.0, gap), 2),
+                        "missing_readings": missing,
+                        "open": False,
+                    }
+                )
+            if restarted:
+                close_current()
+                segments.append(
+                    {
+                        "kind": "reiniciou",
+                        "at": _iso(recorded_at),
+                        "from_boot_id": previous_boot,
+                        "to_boot_id": boot,
+                        "reset_reason": getattr(row, "reset_reason", None),
+                    }
+                )
+
+        if current is None or current["kind"] != kind:
+            close_current()
+            current = {
+                "kind": kind,
+                "start": _iso(recorded_at),
+                "end": _iso(recorded_at),
+                "readings": 0,
+                "first_sequence": getattr(row, "sequence_number", None),
+                "last_sequence": getattr(row, "sequence_number", None),
+                "delivered_at": _iso(received_at),
+                "max_delay_seconds": 0.0,
+            }
+        current["end"] = _iso(recorded_at)
+        current["readings"] += 1
+        current["last_sequence"] = getattr(row, "sequence_number", None)
+        if received_at is not None:
+            delivered = current["delivered_at"]
+            if delivered is None or received_at.isoformat() > delivered:
+                current["delivered_at"] = _iso(received_at)
+        current["max_delay_seconds"] = round(max(current["max_delay_seconds"], _row_delay_seconds(row)), 2)
+        previous = row
+
+    close_current()
+
+    last_known = None
+    for row in reversed(ordered):
+        if getattr(row, "time_quality", None) != "unknown":
+            last_known = row
+            break
+    open_gap = None
+    if last_known is not None:
+        silence = (now - _row_time(last_known)).total_seconds()
+        if silence > max(gap_limit, settings.iot_offline_threshold_seconds):
+            open_gap = {
+                "kind": "sem_dados",
+                "start": _iso(_row_time(last_known)),
+                "end": None,
+                "duration_seconds": round(silence, 2),
+                "missing_readings": 0,
+                "open": True,
+            }
+            segments.append(open_gap)
+
+    summary = {
+        "readings": len(ordered),
+        "online_readings": sum(s["readings"] for s in segments if s["kind"] == "online"),
+        "offline_com_coleta_readings": sum(s["readings"] for s in segments if s["kind"] == "offline_com_coleta"),
+        "restarts": sum(1 for s in segments if s["kind"] == "reiniciou"),
+        "gaps": sum(1 for s in segments if s["kind"] == "sem_dados"),
+        "missing_readings": sum(int(s.get("missing_readings", 0)) for s in segments if s["kind"] == "sem_dados"),
+        "unknown_time_readings": unknown_time_readings,
+        "currently_silent": open_gap is not None,
+    }
+    return {"segments": segments, "summary": summary}
+

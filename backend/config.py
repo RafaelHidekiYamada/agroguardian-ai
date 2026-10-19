@@ -61,6 +61,15 @@ class Settings:
     )
     iot_rate_limit_per_minute: int = int(os.getenv("IOT_RATE_LIMIT_PER_MINUTE", "120"))
     iot_max_payload_bytes: int = int(os.getenv("IOT_MAX_PAYLOAD_BYTES", "32768"))
+    # Store-and-forward batches carry up to iot_batch_max_readings readings, so they
+    # get their own (larger) body limit and rate bucket; the live limits above are untouched.
+    iot_batch_max_payload_bytes: int = int(os.getenv("IOT_BATCH_MAX_PAYLOAD_BYTES", "65536"))
+    iot_batch_max_readings: int = int(os.getenv("IOT_BATCH_MAX_READINGS", "100"))
+    iot_batch_rate_limit_per_minute: int = int(os.getenv("IOT_BATCH_RATE_LIMIT_PER_MINUTE", "240"))
+    # Silence between two consecutive readings that counts as "sem dados" in segments.
+    iot_gap_seconds: int = int(os.getenv("IOT_GAP_SECONDS", "60"))
+    # Readings older than this lag are "offline com coleta" (delivered late from the buffer).
+    iot_buffered_delay_seconds: int = int(os.getenv("IOT_BUFFERED_DELAY_SECONDS", "60"))
     iot_min_prediction_interval_seconds: int = int(os.getenv("IOT_MIN_PREDICTION_INTERVAL_SECONDS", "0"))
     iot_distance_safe_cm: float = float(os.getenv("IOT_DISTANCE_SAFE_CM", "180"))
     iot_distance_attention_cm: float = float(

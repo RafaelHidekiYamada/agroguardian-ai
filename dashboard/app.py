@@ -3,6 +3,7 @@ import sys
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import altair as alt
 import pandas as pd
@@ -10,7 +11,7 @@ import requests
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from timeutils import LOCAL_TZ_LABEL, format_local_time, localize_time_columns  # noqa: E402
+from timeutils import LOCAL_TZ, LOCAL_TZ_LABEL, format_local_time, localize_time_columns  # noqa: E402
 
 import pydeck as pdk
 
@@ -1746,6 +1747,375 @@ with tab_map["Tendências"]:
     else:
         show_api_error("Erro ao carregar tendências", trends_data)
 
+# --- Telemetria: conectividade e grafico customizavel -----------------------
+
+TELEMETRY_METRIC_LABELS = {
+    "temperature_c": "Temperatura (C)",
+    "humidity_pct": "Umidade do ar (%)",
+    "pressure_hpa": "Pressao (hPa)",
+    "altitude_m": "Altitude (m)",
+    "battery_voltage": "Bateria (V)",
+    "accel_x": "Acelerometro X (m/s2)",
+    "accel_y": "Acelerometro Y (m/s2)",
+    "accel_z": "Acelerometro Z (m/s2)",
+    "acceleration_magnitude": "Aceleracao total (m/s2)",
+    "gyro_x": "Giroscopio X (dps)",
+    "gyro_y": "Giroscopio Y (dps)",
+    "gyro_z": "Giroscopio Z (dps)",
+    "gyro_magnitude": "Giroscopio total (dps)",
+    "pitch": "Pitch (graus)",
+    "roll": "Roll (graus)",
+    "inclination_deg": "Inclinacao (graus)",
+    "max_tilt_angle": "Inclinacao maxima (graus)",
+    "movement_anomaly_score": "Anomalia de movimento",
+    "possible_impact": "Possivel impacto (0/1)",
+    "distance_cm": "Distancia ultrassonico (cm)",
+    "obstacle_distance_cm": "Distancia do obstaculo (cm)",
+    "obstacle_detected": "Obstaculo detectado (0/1)",
+    "gps_accuracy_m": "Precisao GPS (m)",
+    "gps_satellites": "Satelites GPS",
+    "confidence_score": "Confianca (%)",
+    "risk_score": "Risk score",
+    "telemetry_age_seconds": "Idade da leitura (s)",
+    "ingestion_delay_seconds": "Atraso de entrega (s)",
+    "uptime_ms": "Uptime do ESP32 (ms)",
+    "boot_id": "Boot ID",
+    "sequence_number": "Numero de sequencia",
+}
+# Colunas numericas que identificam registros e nao sao medicoes.
+TELEMETRY_METRIC_EXCLUDED = {"id", "iot_device_id", "equipment_id", "latitude", "longitude"}
+TELEMETRY_DEFAULT_METRICS = ["temperature_c", "humidity_pct", "acceleration_magnitude", "distance_cm"]
+TELEMETRY_CHART_TYPES = ["Linha", "Area", "Barras", "Pontos"]
+TELEMETRY_RESAMPLE_OPTIONS = {
+    "Automatico": "auto",
+    "Sem agrupar (leituras originais)": None,
+    "10 segundos": "10s",
+    "30 segundos": "30s",
+    "1 minuto": "1min",
+    "5 minutos": "5min",
+    "15 minutos": "15min",
+    "1 hora": "1h",
+    "6 horas": "6h",
+}
+TELEMETRY_AGGREGATIONS = {"Media": "mean", "Minimo": "min", "Maximo": "max", "Mediana": "median"}
+TELEMETRY_LAYOUTS = [
+    "Um grafico por metrica",
+    "Sobrepostas (valores originais)",
+    "Sobrepostas (normalizado 0-100)",
+]
+TELEMETRY_SOURCES = ["Todas", "Somente buffer (offline com coleta)", "Somente ao vivo"]
+TELEMETRY_SEGMENT_LABELS = {
+    "online": "Online",
+    "offline_com_coleta": "Offline com coleta",
+    "sem_dados": "Sem dados",
+    "reiniciou": "Reiniciou",
+}
+TELEMETRY_SEGMENT_COLORS = {
+    "Online": "#1b7f5c",
+    "Offline com coleta": "#e08a00",
+    "Sem dados": "#8a8f98",
+    "Reiniciou": "#c0392b",
+}
+TELEMETRY_PERIOD_HOURS = {"5m": 1, "1h": 1, "6h": 6, "24h": 24, "7d": 168, "30d": 168}
+
+
+def telemetry_numeric_frame(hist_df: pd.DataFrame) -> pd.DataFrame:
+    """Colunas numericas utilizaveis como metrica (dicts, textos e vazias ficam de fora)."""
+    columns: dict[str, pd.Series] = {}
+    for column in hist_df.columns:
+        if column in TELEMETRY_METRIC_EXCLUDED:
+            continue
+        series = hist_df[column]
+        if series.dtype == bool:
+            series = series.astype(int)
+        elif series.dtype == object:
+            try:
+                series = pd.to_numeric(series, errors="coerce")
+            except (TypeError, ValueError):
+                continue
+        elif not pd.api.types.is_numeric_dtype(series):
+            continue
+        if series.notna().sum() == 0:
+            continue
+        columns[column] = series.astype(float)
+    return pd.DataFrame(columns, index=hist_df.index)
+
+
+def telemetry_auto_resample_rule(span_seconds: float, target_points: int = 600) -> str | None:
+    if span_seconds <= 0:
+        return None
+    needed = span_seconds / target_points
+    for rule, seconds in (("10s", 10), ("30s", 30), ("1min", 60), ("5min", 300), ("15min", 900), ("1h", 3600)):
+        if needed <= seconds:
+            return rule if needed > 5 else None
+    return "6h"
+
+
+def render_metric_explorer(hist_df: pd.DataFrame, time_col: str, key_prefix: str) -> None:
+    """Grafico resumido e customizavel do log de telemetria (escolha de metricas, tipo e agrupamento)."""
+    if time_col not in hist_df.columns:
+        return
+    frame = hist_df.copy()
+    frame[time_col] = pd.to_datetime(frame[time_col], errors="coerce")
+    frame = frame.dropna(subset=[time_col]).sort_values(time_col)
+    if frame.empty:
+        return
+
+    st.markdown("#### Grafico customizavel")
+    st.caption(
+        "Resuma o log de telemetria em um grafico: escolha as metricas, o tipo, o agrupamento no tempo "
+        f"e a escala. Horarios no fuso {LOCAL_TZ_LABEL}. Arraste para mover e use a roda do mouse para dar zoom."
+    )
+
+    source_choice = st.selectbox("Origem das leituras", TELEMETRY_SOURCES, key=f"{key_prefix}_source")
+    if "ingestion_mode" in frame.columns:
+        if source_choice == TELEMETRY_SOURCES[1]:
+            frame = frame[frame["ingestion_mode"] == "buffered"]
+        elif source_choice == TELEMETRY_SOURCES[2]:
+            frame = frame[frame["ingestion_mode"] != "buffered"]
+    elif source_choice != TELEMETRY_SOURCES[0]:
+        st.caption("Origem indisponivel: o servidor ainda nao informa o modo de envio das leituras.")
+    if frame.empty:
+        st.info("Nenhuma leitura para a origem selecionada.")
+        return
+
+    numeric = telemetry_numeric_frame(frame)
+    available = list(numeric.columns)
+    if not available:
+        st.info("Sem metricas numericas no periodo selecionado.")
+        return
+    labels = {column: TELEMETRY_METRIC_LABELS.get(column, column) for column in available}
+    # Metricas conhecidas primeiro, na ordem do dicionario; as demais em ordem alfabetica.
+    known = [column for column in TELEMETRY_METRIC_LABELS if column in available]
+    others = sorted(column for column in available if column not in TELEMETRY_METRIC_LABELS)
+    options = known + others
+    default_metrics = [column for column in TELEMETRY_DEFAULT_METRICS if column in options] or options[:2]
+
+    selected = st.multiselect(
+        "Metricas",
+        options,
+        default=default_metrics,
+        format_func=lambda column: labels[column],
+        key=f"{key_prefix}_metrics",
+    )
+    c1, c2, c3 = st.columns(3)
+    chart_type = c1.selectbox("Tipo", TELEMETRY_CHART_TYPES, key=f"{key_prefix}_type")
+    layout = c2.selectbox("Disposicao e escala", TELEMETRY_LAYOUTS, key=f"{key_prefix}_layout")
+    resample_label = c3.selectbox(
+        "Agrupar no tempo", list(TELEMETRY_RESAMPLE_OPTIONS), key=f"{key_prefix}_resample"
+    )
+    aggregation_label = "Media"
+    if TELEMETRY_RESAMPLE_OPTIONS[resample_label] is not None:
+        aggregation_label = st.radio(
+            "Funcao de resumo", list(TELEMETRY_AGGREGATIONS), horizontal=True, key=f"{key_prefix}_agg"
+        )
+    show_restarts = False
+    if "boot_id" in frame.columns and frame["boot_id"].notna().any():
+        show_restarts = st.checkbox("Marcar reinicios do ESP32", value=True, key=f"{key_prefix}_restarts")
+
+    if not selected:
+        st.info("Escolha ao menos uma metrica para montar o grafico.")
+        return
+
+    series = numeric[selected].copy()
+    series.index = frame[time_col].values
+    span_seconds = (series.index.max() - series.index.min()) / pd.Timedelta(seconds=1)
+    rule = TELEMETRY_RESAMPLE_OPTIONS[resample_label]
+    if rule == "auto":
+        rule = telemetry_auto_resample_rule(float(span_seconds))
+    if rule:
+        series = series.resample(rule).agg(TELEMETRY_AGGREGATIONS[aggregation_label]).dropna(how="all")
+    if series.empty:
+        st.info("Sem pontos para desenhar com este agrupamento.")
+        return
+
+    plot = series.copy()
+    plot.index.name = "tempo"
+    long = plot.reset_index().melt("tempo", var_name="coluna", value_name="valor").dropna(subset=["valor"])
+    long["metrica"] = long["coluna"].map(labels)
+    if layout == TELEMETRY_LAYOUTS[2]:
+        spans = long.groupby("coluna")["valor"].transform(lambda values: values.max() - values.min())
+        minimums = long.groupby("coluna")["valor"].transform("min")
+        long["normalizado"] = ((long["valor"] - minimums) / spans.where(spans > 0) * 100).fillna(50.0)
+        y_field, y_title = "normalizado", "Normalizado (0-100)"
+    else:
+        y_field, y_title = "valor", None
+
+    restart_times = pd.DataFrame({"tempo": []})
+    if show_restarts:
+        boots = frame[[time_col, "boot_id"]].dropna()
+        changed = boots["boot_id"].ne(boots["boot_id"].shift()) & boots["boot_id"].shift().notna()
+        restart_times = pd.DataFrame({"tempo": boots.loc[changed, time_col].values})
+
+    st.caption(
+        f"{len(frame)} leituras resumidas em {len(plot)} pontos por metrica"
+        + (f" (agrupadas a cada {rule}, {aggregation_label.lower()})." if rule else ".")
+    )
+
+    def _mark(chart):
+        if chart_type == "Area":
+            return chart.mark_area(opacity=0.35, line=True)
+        if chart_type == "Barras":
+            return chart.mark_bar()
+        if chart_type == "Pontos":
+            return chart.mark_circle(size=40)
+        return chart.mark_line()
+
+    def _panel(data: pd.DataFrame, height: int, y_title_override: str | None, with_color: bool) -> Any:
+        encodings = dict(
+            x=alt.X("tempo:T", title=None),
+            y=alt.Y(f"{y_field}:Q", title=y_title_override, scale=alt.Scale(zero=(chart_type == "Barras"))),
+            tooltip=[
+                alt.Tooltip("tempo:T", title="Horario", format="%Y-%m-%d %H:%M:%S"),
+                alt.Tooltip("metrica:N", title="Metrica"),
+                alt.Tooltip("valor:Q", title="Valor", format=".3f"),
+            ],
+        )
+        if with_color:
+            encodings["color"] = alt.Color("metrica:N", legend=alt.Legend(orient="bottom", title=None))
+        layer = _mark(alt.Chart(data)).encode(**encodings).properties(height=height)
+        if not restart_times.empty:
+            rules = (
+                alt.Chart(restart_times)
+                .mark_rule(color=TELEMETRY_SEGMENT_COLORS["Reiniciou"], strokeDash=[4, 3])
+                .encode(x="tempo:T", tooltip=[alt.Tooltip("tempo:T", title="Reiniciou", format="%Y-%m-%d %H:%M:%S")])
+            )
+            layer = alt.layer(layer, rules)
+        return layer
+
+    with alt.data_transformers.enable(max_rows=None):
+        if layout == TELEMETRY_LAYOUTS[0]:
+            panels = []
+            for column in selected:
+                part = long[long["coluna"] == column]
+                if part.empty:
+                    continue
+                panels.append(_panel(part, 140, labels[column], False).interactive(bind_y=False))
+            if panels:
+                st.altair_chart(alt.vconcat(*panels), use_container_width=True)
+        else:
+            st.altair_chart(_panel(long, 320, y_title, True).interactive(bind_y=False), use_container_width=True)
+
+
+def render_connectivity_timeline(device_id: str | None, period_code: str) -> None:
+    """Faixa de conectividade e linha do tempo: online, offline com coleta, reiniciou e sem dados."""
+    if not device_id:
+        return
+    hours = TELEMETRY_PERIOD_HOURS.get(period_code, 24)
+    ok, data = get_json(f"{IOT_DEVICES_URL}/{quote(str(device_id), safe='')}/telemetry/segments?hours={hours}")
+    st.markdown("#### Conectividade")
+    if not ok or not isinstance(data, dict):
+        st.caption("Linha do tempo de conectividade indisponivel (servidor sem o recurso ou sem permissao).")
+        return
+    summary = data.get("summary") or {}
+    signal = data.get("signal_status") or "-"
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Sinal", "Com sinal" if signal == "COM_SINAL" else "Sem sinal" if signal == "SEM_SINAL" else "-")
+    m2.metric("Ultimo contato", format_local_time(data.get("last_seen_at")))
+    m3.metric("Ao vivo", summary.get("online_readings", 0))
+    m4.metric("Offline com coleta", summary.get("offline_com_coleta_readings", 0))
+    m5.metric("Reinicios", summary.get("restarts", 0))
+    m6.metric("Leituras perdidas", summary.get("missing_readings", 0))
+    if period_code == "30d":
+        st.caption("A linha do tempo cobre no maximo as ultimas 168 horas (7 dias).")
+    if summary.get("currently_silent"):
+        st.warning("O dispositivo esta sem enviar dados neste momento (segmento 'Sem dados' em aberto).")
+    if summary.get("unknown_time_readings"):
+        st.caption(
+            f"{summary['unknown_time_readings']} leitura(s) sem horario confiavel do ESP32 "
+            "foram datadas na chegada e nao entram na deteccao de lacunas."
+        )
+
+    generated = pd.to_datetime(data.get("generated_at"), utc=True, errors="coerce")
+    rows = []
+    for segment in data.get("segments", []):
+        kind = segment.get("kind")
+        label = TELEMETRY_SEGMENT_LABELS.get(kind, str(kind))
+        if kind == "reiniciou":
+            at = pd.to_datetime(segment.get("at"), utc=True, errors="coerce")
+            rows.append(
+                {
+                    "Estado": label,
+                    "Inicio": at,
+                    "Fim": at,
+                    "Leituras": None,
+                    "Duracao (s)": 0.0,
+                    "Detalhe": f"boot {segment.get('from_boot_id')} -> {segment.get('to_boot_id')}"
+                    + (f" | reset: {segment['reset_reason']}" if segment.get("reset_reason") else ""),
+                }
+            )
+            continue
+        start = pd.to_datetime(segment.get("start"), utc=True, errors="coerce")
+        end = pd.to_datetime(segment.get("end"), utc=True, errors="coerce")
+        if pd.isna(end):
+            end = generated
+        detail = ""
+        if kind == "sem_dados":
+            detail = f"{segment.get('missing_readings', 0)} leitura(s) descartada(s) pelo buffer"
+            if segment.get("open"):
+                detail += " | em aberto"
+        elif kind == "offline_com_coleta":
+            detail = f"entregue em {format_local_time(segment.get('delivered_at'))} | atraso max {segment.get('max_delay_seconds', 0)} s"
+        rows.append(
+            {
+                "Estado": label,
+                "Inicio": start,
+                "Fim": end,
+                "Leituras": segment.get("readings"),
+                "Duracao (s)": segment.get("duration_seconds")
+                if segment.get("duration_seconds") is not None
+                else (round((end - start).total_seconds(), 1) if pd.notna(start) and pd.notna(end) else None),
+                "Detalhe": detail,
+            }
+        )
+    if not rows:
+        st.info("Sem segmentos de telemetria no periodo.")
+        return
+    timeline = pd.DataFrame(rows)
+    for column in ("Inicio", "Fim"):
+        timeline[column] = timeline[column].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+
+    bars = timeline[timeline["Estado"] != TELEMETRY_SEGMENT_LABELS["reiniciou"]]
+    marks = timeline[timeline["Estado"] == TELEMETRY_SEGMENT_LABELS["reiniciou"]]
+    order = list(TELEMETRY_SEGMENT_COLORS)
+    color_scale = alt.Scale(domain=order, range=[TELEMETRY_SEGMENT_COLORS[name] for name in order])
+    tooltip = [
+        alt.Tooltip("Estado:N"),
+        alt.Tooltip("Inicio:T", format="%Y-%m-%d %H:%M:%S"),
+        alt.Tooltip("Fim:T", format="%Y-%m-%d %H:%M:%S"),
+        alt.Tooltip("Leituras:Q"),
+        alt.Tooltip("Detalhe:N"),
+    ]
+    layers = []
+    if not bars.empty:
+        layers.append(
+            alt.Chart(bars)
+            .mark_bar(height=18, minBandSize=3)
+            .encode(
+                x=alt.X("Inicio:T", title=None),
+                x2="Fim:T",
+                y=alt.Y("Estado:N", sort=order, title=None),
+                color=alt.Color("Estado:N", scale=color_scale, legend=None),
+                tooltip=tooltip,
+            )
+        )
+    if not marks.empty:
+        layers.append(
+            alt.Chart(marks)
+            .mark_point(shape="diamond", size=140, filled=True)
+            .encode(
+                x=alt.X("Inicio:T", title=None),
+                y=alt.Y("Estado:N", sort=order, title=None),
+                color=alt.Color("Estado:N", scale=color_scale, legend=None),
+                tooltip=tooltip,
+            )
+        )
+    if layers:
+        st.altair_chart(alt.layer(*layers).properties(height=130), use_container_width=True)
+    with st.expander("Segmentos (detalhe)"):
+        st.dataframe(timeline, use_container_width=True)
+
+
 if "Telemetria" in tab_map:
     with tab_map["Telemetria"]:
         st.markdown("### Central de Telemetria")
@@ -1780,131 +2150,161 @@ if "Telemetria" in tab_map:
             auto_refresh = refresh_cols[0].checkbox("Auto", value=False, key="telemetry_auto")
             refresh_seconds = refresh_cols[1].number_input("Segundos", min_value=2, max_value=60, value=5, step=1)
 
-            ok_latest, latest_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/telemetry/latest")
-            ok_risk, risk_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/risk/current")
-            ok_history, history_data = get_json(
-                f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/telemetry/history?period={period_map[period_label]}"
-            )
-            ok_events, events_data = get_json(
-                f"{API_BASE_URL}/api/v1/equipments/{selected_equipment_id}/iot-events?period={period_map[period_label]}"
-            )
-
-            latest = latest_data.get("telemetry") if ok_latest and isinstance(latest_data, dict) else None
-            if latest:
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("ESP32", latest.get("device_id", "-"))
-                m2.metric("Status", latest_data.get("device_status", latest.get("telemetry_status", "-")))
-                m3.metric("Idade", format_measurement(latest.get("telemetry_age_seconds"), "s", 0))
-                m4.metric("Risk Score", latest.get("risk_score", "-"))
-                m5.metric("Risco", latest.get("risk_level", "-"))
-
-                b1, b2, b3 = st.columns(3)
-                b1.metric("BME temperatura", format_measurement(latest.get("temperature_c"), "C"))
-                b2.metric("BME umidade", format_measurement(latest.get("humidity_pct"), "%"))
-                b3.metric("BME pressao", format_measurement(latest.get("pressure_hpa"), "hPa"))
-
-                p1, p2, p3 = st.columns(3)
-                p1.metric("MPU accel X", format_measurement(latest.get("accel_x"), "m/s2", 2))
-                p2.metric("MPU accel Y", format_measurement(latest.get("accel_y"), "m/s2", 2))
-                p3.metric("MPU accel Z", format_measurement(latest.get("accel_z"), "m/s2", 2))
-
-                q1, q2, q3 = st.columns(3)
-                q1.metric("MPU magnitude", format_measurement(latest.get("acceleration_magnitude"), "m/s2", 2))
-                q2.metric(
-                    "MPU pitch / roll",
-                    f"{format_measurement(latest.get('pitch'), 'deg')} / {format_measurement(latest.get('roll'), 'deg')}",
+            def _render_telemetry_live(equipment_id, period_code):
+                # Fragmento: com "Auto" ligado, so este bloco recarrega a cada N segundos
+                # (st.fragment run_every), sem time.sleep/st.rerun nem travar as outras abas.
+                ok_latest, latest_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/telemetry/latest")
+                ok_risk, risk_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/risk/current")
+                ok_history, history_data = get_json(
+                    f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/telemetry/history?period={period_code}&limit=5000"
                 )
-                q3.metric("MPU inclinacao", format_measurement(latest.get("inclination_deg"), "deg"))
-
-                s1, s2, s3 = st.columns(3)
-                s1.metric("MPU movimento", format_measurement(latest.get("movement_anomaly_score"), "score"))
-                s2.metric("MPU impacto", "SIM" if latest.get("possible_impact") else "NAO")
-                ultrasonic_model = latest.get("ultrasonic_sensor_model") or "Ultrassonico"
-                if latest.get("distance_cm") is None and latest.get("obstacle_detected") is False:
-                    s3.metric(f"{ultrasonic_model} distancia", "Fora de alcance")
-                else:
-                    s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
-
-                e1, e2, e3 = st.columns(3)
-                e1.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
-                e2.metric("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"))
-                e3.metric("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D")
-
-                o1, o2, o3 = st.columns(3)
-                o1.metric("Qualidade", latest.get("data_quality_status", "-"))
-                o2.metric("Confianca", format_measurement(latest.get("confidence_score"), "%"))
-                obstacle_status = "Detectado" if latest.get("obstacle_detected") else "Sem alerta"
-                if latest.get("distance_cm") is None and latest.get("obstacle_detected") is not False:
-                    obstacle_status = "N/D"
-                o3.metric("Obstaculo ultrassonico", obstacle_status)
-
-                issues = latest.get("data_quality_issues") or []
-                if issues:
-                    st.caption("Qualidade: " + " | ".join(str(issue) for issue in issues))
-                st.caption(
-                    f"Recebido: {format_local_time(latest.get('received_at'))} ({LOCAL_TZ_LABEL}) | "
-                    f"Origem: {'ESP32 fisico' if latest.get('iot_device_id') else 'legado'}"
+                ok_events, events_data = get_json(
+                    f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/iot-events?period={period_code}"
                 )
 
-                explanation = latest.get("explanation") or {}
-                if explanation:
-                    st.markdown("#### Explicacao da IA")
-                    st.info(explanation.get("summary", "Sem resumo."))
-                    if explanation.get("recommendation"):
-                        st.caption(f"Recomendacao: {explanation['recommendation']}")
-                    factors = explanation.get("factors", [])
-                    if factors:
-                        st.dataframe(any_to_dataframe(factors), use_container_width=True)
-            else:
-                st.info("Ainda nao ha telemetria IoT para este equipamento.")
+                latest = latest_data.get("telemetry") if ok_latest and isinstance(latest_data, dict) else None
+                if latest:
+                    m1, m2, m3, m4, m5 = st.columns(5)
+                    m1.metric("ESP32", latest.get("device_id", "-"))
+                    m2.metric("Status", latest_data.get("device_status", latest.get("telemetry_status", "-")))
+                    m3.metric("Idade", format_measurement(latest.get("telemetry_age_seconds"), "s", 0))
+                    m4.metric("Risk Score", latest.get("risk_score", "-"))
+                    m5.metric("Risco", latest.get("risk_level", "-"))
 
-            if ok_history and isinstance(history_data, dict):
-                hist_df = any_to_dataframe(history_data.get("history", []))
-                st.markdown("#### Historico")
-                st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
-                if not hist_df.empty:
-                    st.dataframe(hist_df, use_container_width=True)
-                    time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
-                    bme_cols = [
-                        col
-                        for col in ["temperature_c", "humidity_pct", "pressure_hpa", "battery_voltage"]
-                        if col in hist_df.columns
-                    ]
-                    motion_cols = [
-                        col
-                        for col in [
-                            "distance_cm",
-                            "accel_x",
-                            "accel_y",
-                            "accel_z",
-                            "acceleration_magnitude",
-                            "inclination_deg",
-                            "movement_anomaly_score",
-                            "risk_score",
-                        ]
-                        if col in hist_df.columns
-                    ]
-                    if time_col in hist_df.columns and bme_cols:
-                        st.caption("Ambiente e bateria no periodo")
-                        st.line_chart(hist_df[[time_col, *bme_cols]].set_index(time_col)[bme_cols])
-                    if time_col in hist_df.columns and motion_cols:
-                        st.caption("Ultrassonico, MPU-6050 e risco no periodo")
-                        st.line_chart(hist_df[[time_col, *motion_cols]].set_index(time_col)[motion_cols])
+                    b1, b2, b3 = st.columns(3)
+                    b1.metric("BME temperatura", format_measurement(latest.get("temperature_c"), "C"))
+                    b2.metric("BME umidade", format_measurement(latest.get("humidity_pct"), "%"))
+                    b3.metric("BME pressao", format_measurement(latest.get("pressure_hpa"), "hPa"))
+
+                    p1, p2, p3 = st.columns(3)
+                    p1.metric("MPU accel X", format_measurement(latest.get("accel_x"), "m/s2", 2))
+                    p2.metric("MPU accel Y", format_measurement(latest.get("accel_y"), "m/s2", 2))
+                    p3.metric("MPU accel Z", format_measurement(latest.get("accel_z"), "m/s2", 2))
+
+                    q1, q2, q3 = st.columns(3)
+                    q1.metric("MPU magnitude", format_measurement(latest.get("acceleration_magnitude"), "m/s2", 2))
+                    q2.metric(
+                        "MPU pitch / roll",
+                        f"{format_measurement(latest.get('pitch'), 'deg')} / {format_measurement(latest.get('roll'), 'deg')}",
+                    )
+                    q3.metric("MPU inclinacao", format_measurement(latest.get("inclination_deg"), "deg"))
+
+                    s1, s2, s3 = st.columns(3)
+                    s1.metric("MPU movimento", format_measurement(latest.get("movement_anomaly_score"), "score"))
+                    s2.metric("MPU impacto", "SIM" if latest.get("possible_impact") else "NAO")
+                    ultrasonic_model = latest.get("ultrasonic_sensor_model") or "Ultrassonico"
+                    if latest.get("distance_cm") is None and latest.get("obstacle_detected") is False:
+                        s3.metric(f"{ultrasonic_model} distancia", "Fora de alcance")
+                    else:
+                        s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
+
+                    e1, e2, e3 = st.columns(3)
+                    e1.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
+                    e2.metric("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"))
+                    e3.metric("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D")
+
+                    o1, o2, o3 = st.columns(3)
+                    o1.metric("Qualidade", latest.get("data_quality_status", "-"))
+                    o2.metric("Confianca", format_measurement(latest.get("confidence_score"), "%"))
+                    obstacle_status = "Detectado" if latest.get("obstacle_detected") else "Sem alerta"
+                    if latest.get("distance_cm") is None and latest.get("obstacle_detected") is not False:
+                        obstacle_status = "N/D"
+                    o3.metric("Obstaculo ultrassonico", obstacle_status)
+
+                    issues = latest.get("data_quality_issues") or []
+                    if issues:
+                        st.caption("Qualidade: " + " | ".join(str(issue) for issue in issues))
+                    st.caption(
+                        f"Recebido: {format_local_time(latest.get('received_at'))} ({LOCAL_TZ_LABEL}) | "
+                        f"Origem: {'ESP32 fisico' if latest.get('iot_device_id') else 'legado'}"
+                    )
+
+                    explanation = latest.get("explanation") or {}
+                    if explanation:
+                        st.markdown("#### Explicacao da IA")
+                        st.info(explanation.get("summary", "Sem resumo."))
+                        if explanation.get("recommendation"):
+                            st.caption(f"Recomendacao: {explanation['recommendation']}")
+                        factors = explanation.get("factors", [])
+                        if factors:
+                            st.dataframe(any_to_dataframe(factors), use_container_width=True)
                 else:
-                    st.info("Sem historico no periodo selecionado.")
-            else:
-                show_api_error("Erro ao carregar historico de telemetria", history_data)
+                    st.info("Ainda nao ha telemetria IoT para este equipamento.")
 
-            if ok_events and isinstance(events_data, dict):
-                events = events_data.get("events", [])
-                if events:
-                    st.markdown("#### Eventos IoT")
+                render_connectivity_timeline(latest.get("device_id") if latest else None, period_code)
+
+                if ok_history and isinstance(history_data, dict):
+                    hist_df = any_to_dataframe(history_data.get("history", []))
+                    st.markdown("#### Historico")
                     st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
-                    st.dataframe(any_to_dataframe(events), use_container_width=True)
+                    if not hist_df.empty:
+                        time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
+                        render_metric_explorer(hist_df, time_col, f"tel_{equipment_id}")
+                        if "time_quality" in hist_df.columns:
+                            approximate = int(hist_df["time_quality"].isin(["estimated", "unknown"]).sum())
+                            if approximate:
+                                st.caption(
+                                    f"{approximate} leitura(s) com horario estimado ou desconhecido "
+                                    "(coluna time_quality); o grafico as posiciona pelo horario registrado."
+                                )
+                        with st.expander(f"Tabela de leituras ({len(hist_df)} linhas)"):
+                            st.dataframe(hist_df, use_container_width=True)
+                        bme_cols = [
+                            col
+                            for col in ["temperature_c", "humidity_pct", "pressure_hpa", "battery_voltage"]
+                            if col in hist_df.columns
+                        ]
+                        motion_cols = [
+                            col
+                            for col in [
+                                "distance_cm",
+                                "accel_x",
+                                "accel_y",
+                                "accel_z",
+                                "acceleration_magnitude",
+                                "inclination_deg",
+                                "movement_anomaly_score",
+                                "risk_score",
+                            ]
+                            if col in hist_df.columns
+                        ]
+                        def _numeric_chart_frame(frame, columns):
+                            # Colunas sem medicao (ex.: bateria N/D) chegam como None/texto e
+                            # quebram st.line_chart com "mixed types"; converte e descarta as vazias.
+                            numeric = frame[columns].apply(pd.to_numeric, errors="coerce")
+                            numeric = numeric.dropna(axis=1, how="all")
+                            numeric.index = frame[time_col]
+                            return numeric
+
+                        if time_col in hist_df.columns and bme_cols:
+                            env_chart = _numeric_chart_frame(hist_df, bme_cols)
+                            if not env_chart.empty and len(env_chart.columns) > 0:
+                                st.caption("Ambiente e bateria no periodo")
+                                st.line_chart(env_chart)
+                        if time_col in hist_df.columns and motion_cols:
+                            motion_chart = _numeric_chart_frame(hist_df, motion_cols)
+                            if not motion_chart.empty and len(motion_chart.columns) > 0:
+                                st.caption("Ultrassonico, MPU-6050 e risco no periodo")
+                                st.line_chart(motion_chart)
+                    else:
+                        st.info("Sem historico no periodo selecionado.")
+                else:
+                    show_api_error("Erro ao carregar historico de telemetria", history_data)
+
+                if ok_events and isinstance(events_data, dict):
+                    events = events_data.get("events", [])
+                    if events:
+                        st.markdown("#### Eventos IoT")
+                        st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
+                        st.dataframe(any_to_dataframe(events), use_container_width=True)
+
 
             if auto_refresh:
-                time.sleep(int(refresh_seconds))
-                st.rerun()
+                st.fragment(run_every=int(refresh_seconds))(_render_telemetry_live)(
+                    selected_equipment_id, period_map[period_label]
+                )
+            else:
+                _render_telemetry_live(selected_equipment_id, period_map[period_label])
 
 if "Equipamentos" in tab_map:
     with tab_map["Equipamentos"]:
