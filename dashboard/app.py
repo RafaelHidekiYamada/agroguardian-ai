@@ -1,7 +1,10 @@
+import json
 import os
+from html import escape as _html_escape
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from datetime import time as time_cls
 from typing import Any
 from urllib.parse import quote
 
@@ -9,6 +12,7 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from timeutils import LOCAL_TZ, LOCAL_TZ_LABEL, format_local_time, localize_time_columns  # noqa: E402
@@ -836,8 +840,370 @@ def render_metric_card(title: str, value: str, meta: str, delta: str = "", tone:
     )
 
 
-def begin_section(title: str, link: str = "") -> None:
-    link_html = f'<span class="ag-link">{link}</span>' if link else ""
+# ---------------------------------------------------------------------------
+# Navegacao lateral, fazenda atual e atalhos entre paginas
+# ---------------------------------------------------------------------------
+NAV_GROUPS_BASE = [
+    (
+        "Monitoramento",
+        [
+            ("Visão Geral", None),
+            ("Operação em tempo real", None),
+            ("Telemetria", ("telemetry.view",)),
+            ("Alertas e auditoria", ("audit.view", "alerts.view")),
+            ("Equipamentos", ("equipments.view",)),
+        ],
+    ),
+    (
+        "Analise",
+        [
+            ("Resumo executivo", None),
+            ("Ranking", None),
+            ("Risco regional", None),
+            ("Tendências", None),
+            ("Simulador de risco", None),
+            ("IA e ML", None),
+        ],
+    ),
+]
+# Fora das paginas da fazenda selecionada: pertence ao usuario logado.
+NAV_ADMIN_GROUP = (
+    "Conta e administracao",
+    [
+        ("Políticas de alerta", ("alerts.manage", "settings.manage")),
+        ("Administracao", ("users.view",)),
+    ],
+)
+NAV_DISPLAY = {"Administracao": "Administração", "Políticas de alerta": "Políticas de alerta"}
+PAGE_SUBTITLES = {
+    "Visão Geral": "Painel completo de gestao de riscos agricolas.",
+    "Operação em tempo real": "Simule entradas e calcule o risco operacional.",
+    "Telemetria": "Leituras do ESP32, movimento do trator e conectividade.",
+    "Alertas e auditoria": "Alertas gerados e trilha de auditoria.",
+    "Equipamentos": "Fazendas, equipamentos e dispositivos IoT.",
+    "Resumo executivo": "Indicadores consolidados para a Sompo.",
+    "Ranking": "Equipamentos ordenados por risco.",
+    "Risco regional": "Risco agregado por regiao.",
+    "Tendências": "Evolucao do risco ao longo do tempo.",
+    "Simulador de risco": "Teste cenarios sem afetar os dados reais.",
+    "IA e ML": "Modelos, metricas e explicabilidade.",
+    "Políticas de alerta": "Regras que geram alertas (valem para o usuario logado).",
+    "Administracao": "Usuarios, perfis e permissoes (valem para o usuario logado).",
+}
+NAV_CSS = """
+<style>
+.ag-nav-group{font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:#7fb7b0;margin:.85rem 0 .3rem}
+.ag-nav-admin{border-top:1px solid rgba(255,200,87,.4);margin-top:1.1rem;padding-top:.65rem;color:#ffc857;
+font-size:.7rem;letter-spacing:.14em;text-transform:uppercase}
+.ag-nav-admin small{display:block;letter-spacing:0;text-transform:none;color:#9aa9ad;font-size:.72rem;margin-top:.15rem}
+[class*="st-key-nav_"] button,[class*="st-key-navadm_"] button{justify-content:flex-start;text-align:left;
+min-height:2.05rem;padding:.3rem .7rem}
+[class*="st-key-navadm_"] button{border-left:3px solid #ffc857}
+[class*="st-key-nav_"] button[data-testid="stBaseButton-secondary"],[class*="st-key-navadm_"] button[data-testid="stBaseButton-secondary"]{
+background:rgba(16,36,44,.7);color:#cfe3e6;box-shadow:none;border:1px solid rgba(73,234,216,.14);font-weight:600}
+[class*="st-key-nav_"] button[data-testid="stBaseButton-secondary"]:hover,[class*="st-key-navadm_"] button[data-testid="stBaseButton-secondary"]:hover{
+background:rgba(73,234,216,.14);color:#ffffff;border:1px solid rgba(73,234,216,.4)}
+.stButton > button[data-testid="stBaseButton-tertiary"]{background:none;box-shadow:none;color:#49ead8;font-weight:700;border:0}
+.stButton > button[data-testid="stBaseButton-tertiary"]:hover{color:#ffffff;background:rgba(73,234,216,.1)}
+[data-testid="stPopover"] button,button[data-testid="stPopoverButton"]{background:rgba(16,36,44,.95);color:#e8f1f2;
+border:1px solid rgba(73,234,216,.35);box-shadow:none}
+.ag-farm-card{border:1px solid rgba(73,234,216,.28);border-radius:10px;padding:.6rem .75rem;margin:.5rem 0 .4rem;
+background:linear-gradient(180deg, rgba(16,36,44,.95), rgba(8,18,23,.95))}
+.ag-farm-eyebrow{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:#7fb7b0}
+.ag-farm-name{font-size:1.02rem;font-weight:700;color:#e8f1f2;overflow-wrap:anywhere}
+.ag-farm-meta{font-size:.74rem;color:#8fa3a8;overflow-wrap:anywhere}
+</style>
+"""
+ALL_FARMS_LABEL = "Todas as fazendas"
+
+
+def go_to_page(page: str) -> None:
+    """Callback de botoes: troca a pagina ativa do menu lateral."""
+    st.session_state["nav_page"] = page
+
+
+def restore_kept_widgets() -> None:
+    """Preserva widgets com chave 'keep_*' ao trocar de pagina.
+
+    O Streamlit descarta o estado de widgets que nao foram desenhados na execucao;
+    sem isto, filtros e colunas escolhidos se perderiam ao navegar entre paginas.
+    """
+    kept = st.session_state.setdefault("_kept_widgets", {})
+    for key in list(st.session_state.keys()):
+        if isinstance(key, str) and key.startswith("keep_"):
+            kept[key] = st.session_state[key]
+    for key, value in kept.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def sanitize_choice_state(key: str, options: list, multiple: bool = False) -> None:
+    """Remove valores guardados que nao existem mais nas opcoes (evita erro do Streamlit)."""
+    if key not in st.session_state:
+        return
+    value = st.session_state[key]
+    if multiple:
+        st.session_state[key] = [item for item in (value or []) if item in options]
+    elif value not in options:
+        del st.session_state[key]
+
+
+def build_nav_groups() -> tuple[list[tuple[str, list[str]]], list[str]]:
+    def allowed(permissions: tuple[str, ...] | None) -> bool:
+        return permissions is None or has_any_permission(*permissions)
+
+    groups = []
+    for title, items in NAV_GROUPS_BASE:
+        pages = [name for name, permissions in items if allowed(permissions)]
+        if pages:
+            groups.append((title, pages))
+    admin_pages = [name for name, permissions in NAV_ADMIN_GROUP[1] if allowed(permissions)]
+    return groups, admin_pages
+
+
+def render_sidebar_navigation() -> str:
+    groups, admin_pages = build_nav_groups()
+    available = [page for _, pages in groups for page in pages] + admin_pages
+    st.session_state["_available_pages"] = available
+    active = st.session_state.get("nav_page")
+    if active not in available:
+        active = available[0]
+        st.session_state["nav_page"] = active
+
+    st.sidebar.markdown(NAV_CSS, unsafe_allow_html=True)
+    for title, pages in groups:
+        st.sidebar.markdown(f'<div class="ag-nav-group">{title}</div>', unsafe_allow_html=True)
+        for page in pages:
+            st.sidebar.button(
+                NAV_DISPLAY.get(page, page),
+                key=f"nav_{page}",
+                use_container_width=True,
+                type="primary" if page == active else "secondary",
+                on_click=go_to_page,
+                args=(page,),
+            )
+    if admin_pages:
+        st.sidebar.markdown(
+            f'<div class="ag-nav-admin">{NAV_ADMIN_GROUP[0]}<small>Vale para o usuario logado, '
+            "nao para a fazenda selecionada.</small></div>",
+            unsafe_allow_html=True,
+        )
+        for page in admin_pages:
+            st.sidebar.button(
+                NAV_DISPLAY.get(page, page),
+                key=f"navadm_{page}",
+                use_container_width=True,
+                type="primary" if page == active else "secondary",
+                on_click=go_to_page,
+                args=(page,),
+            )
+    return active
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def render_sidebar_farm_selector() -> None:
+    """Campo fixo com a fazenda visualizada; quem tem mais de uma pode alternar (ou ver todas)."""
+    from html import escape
+
+    ok_farms, farms = get_json(FARMS_URL)
+    ok_equipment, equipments = get_json(EQUIPMENTS_URL)
+    farm_rows = [row for row in farms if isinstance(row, dict)] if ok_farms and isinstance(farms, list) else []
+    equipment_rows = (
+        [row for row in equipments if isinstance(row, dict)] if ok_equipment and isinstance(equipments, list) else []
+    )
+
+    def _farm_id(row: dict) -> int | None:
+        return _as_int(row.get("farm_id", row.get("id")))
+
+    def _farm_name(row: dict) -> str:
+        return str(row.get("farm_name") or row.get("name") or f"Fazenda {_farm_id(row)}")
+
+    if not farm_rows and equipment_rows:
+        seen: dict[int, dict] = {}
+        for item in equipment_rows:
+            farm_key = _as_int(item.get("farm_id"))
+            if farm_key is not None and farm_key not in seen:
+                seen[farm_key] = {"farm_id": farm_key, "farm_name": item.get("farm_name")}
+        farm_rows = list(seen.values())
+
+    # Quem so enxerga parte dos equipamentos (escopo de acesso) so ve as fazendas desses equipamentos.
+    is_admin = str(st.session_state.get("auth_role") or "").upper() == "ADMIN"
+    equipment_farm_ids = {_as_int(item.get("farm_id")) for item in equipment_rows} - {None}
+    if is_admin or not ok_equipment:
+        accessible = farm_rows
+    else:
+        accessible = [row for row in farm_rows if _farm_id(row) in equipment_farm_ids]
+
+    labels = {f"{_farm_name(row)} (ID {_farm_id(row)})": row for row in accessible if _farm_id(row) is not None}
+    options = list(labels)
+    if len(options) > 1:
+        options = [ALL_FARMS_LABEL] + options
+
+    chosen = ALL_FARMS_LABEL
+    if len(options) > 1:
+        sanitize_choice_state("keep_farm_select", options)
+        with st.sidebar:
+            st.markdown('<div class="ag-farm-eyebrow">Fazenda visualizada</div>', unsafe_allow_html=True)
+            chosen = st.selectbox(
+                "Fazenda visualizada",
+                options,
+                key="keep_farm_select",
+                label_visibility="collapsed",
+                help="Filtra as paginas de monitoramento e analise pela fazenda escolhida.",
+            )
+    elif len(options) == 1:
+        chosen = options[0]
+    else:
+        chosen = ""
+
+    selected_row = labels.get(chosen)
+    if selected_row is not None:
+        farm_id = _farm_id(selected_row)
+        farm_equipment = [item for item in equipment_rows if _as_int(item.get("farm_id")) == farm_id]
+        ctx = {
+            "farm_id": farm_id,
+            "farm_name": _farm_name(selected_row),
+            "equipment_ids": {_as_int(item.get("equipment_id", item.get("id"))) for item in farm_equipment} - {None},
+            "equipment_names": {
+                str(item.get("equipment_name") or item.get("name")) for item in farm_equipment if item.get("name")
+            },
+        }
+        region = selected_row.get("region") or ""
+        meta = " | ".join(part for part in (str(region) if region else "", f"{len(farm_equipment)} equipamento(s)") if part)
+        title, subtitle = _farm_name(selected_row), meta
+    else:
+        ctx = {"farm_id": None, "farm_name": ALL_FARMS_LABEL, "equipment_ids": set(), "equipment_names": set()}
+        count = len(accessible)
+        title = ALL_FARMS_LABEL if accessible else "Nenhuma fazenda disponivel"
+        subtitle = f"{count} fazenda(s) com acesso" if accessible else ""
+    st.session_state["_farm_ctx"] = ctx
+    st.sidebar.markdown(
+        f'<div class="ag-farm-card"><div class="ag-farm-eyebrow">Fazenda atual</div>'
+        f'<div class="ag-farm-name">{escape(title)}</div><div class="ag-farm-meta">{escape(subtitle)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def row_in_selected_farm(row: dict, kind: str = "auto") -> bool:
+    ctx = st.session_state.get("_farm_ctx") or {}
+    farm_id = ctx.get("farm_id")
+    if farm_id is None:
+        return True
+    if kind == "farm":
+        row_farm = _as_int(row.get("farm_id", row.get("id")))
+        return row_farm is None or row_farm == farm_id
+    if row.get("farm_id") is not None:
+        return _as_int(row.get("farm_id")) == farm_id
+    if row.get("equipment_id") is not None:
+        return _as_int(row.get("equipment_id")) in (ctx.get("equipment_ids") or set())
+    name = row.get("equipment_name") or row.get("equipment")
+    if name is not None and ctx.get("equipment_names"):
+        return str(name) in ctx["equipment_names"]
+    if row.get("farm_name"):
+        return row.get("farm_name") == ctx.get("farm_name")
+    return True
+
+
+def filter_rows_by_farm(rows: Any, kind: str = "auto") -> Any:
+    if not isinstance(rows, list):
+        return rows
+    return [row for row in rows if not isinstance(row, dict) or row_in_selected_farm(row, kind)]
+
+
+def filter_df_by_farm(df: pd.DataFrame, kind: str = "auto") -> pd.DataFrame:
+    ctx = st.session_state.get("_farm_ctx") or {}
+    if df.empty or ctx.get("farm_id") is None:
+        return df
+    mask = df.apply(lambda row: row_in_selected_farm(row.to_dict(), kind), axis=1)
+    return df[mask]
+
+
+def selected_farm_caption() -> str:
+    ctx = st.session_state.get("_farm_ctx") or {}
+    return ctx.get("farm_name") or ""
+
+
+PERMISSION_GROUP_LABELS = {
+    "users": "Usuarios",
+    "roles": "Perfis",
+    "farms": "Fazendas",
+    "equipments": "Equipamentos",
+    "telemetry": "Telemetria",
+    "alerts": "Alertas",
+    "audit": "Auditoria",
+    "risk": "Risco",
+    "settings": "Configuracoes",
+    "ml": "IA e ML",
+    "iot": "Dispositivos IoT",
+    "policies": "Politicas",
+}
+
+
+def render_permission_checklist(
+    title: str,
+    key_prefix: str,
+    options: list[str],
+    descriptions: dict[str, str],
+    selected: list[str] | None = None,
+    help_text: str = "",
+) -> list[str]:
+    """Lista de permissoes em caixas de marcacao, agrupadas, recolhivel e com descricao de cada uma."""
+    selected_set = set(selected or [])
+    chosen: list[str] = []
+    label = f"{title} ({len(selected_set)} marcada(s) ao abrir)" if selected_set else title
+    with st.expander(label, expanded=False):
+        if help_text:
+            st.caption(help_text)
+        if not options:
+            st.info("Nenhuma permissao disponivel (verifique sua permissao para listar).")
+        groups: dict[str, list[str]] = {}
+        for code in options:
+            groups.setdefault(str(code).split(".")[0], []).append(code)
+        for group, codes in groups.items():
+            st.markdown(f"**{PERMISSION_GROUP_LABELS.get(group, group.title())}**")
+            for code in codes:
+                if st.checkbox(code, value=code in selected_set, key=f"{key_prefix}_{code}"):
+                    chosen.append(code)
+                description = descriptions.get(code)
+                if description:
+                    st.caption(description)
+    return chosen
+
+
+
+def begin_section(title: str, link: str = "", target: str = "") -> None:
+    """Titulo de secao; com `target`, o link vira um botao que leva direto a pagina correspondente."""
+    link_html = ""
+    if link and target:
+        if target in (st.session_state.get("_available_pages") or []):
+            title_col, link_col = st.columns([0.66, 0.34], vertical_alignment="center")
+            with title_col:
+                st.markdown(
+                    f"""
+                    <div class="ag-section-card">
+                        <div class="ag-section-title"><span>{title}</span></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with link_col:
+                st.button(
+                    f"{link} →",
+                    key=f"goto_{target}_{title}",
+                    on_click=go_to_page,
+                    args=(target,),
+                    type="tertiary",
+                    use_container_width=True,
+                )
+            return
+    elif link:
+        link_html = f'<span class="ag-link">{link}</span>'
     st.markdown(
         f"""
         <div class="ag-section-card">
@@ -950,6 +1316,9 @@ def render_overview_dashboard() -> None:
     ok_alerts, alerts_data = get_json(ALERTS_URL)
     ok_farms, farms_data = get_json(FARMS_URL)
     ok_metrics, metrics_data = get_json(ML_METRICS_URL)
+    # Ranking e alertas seguem a fazenda selecionada; os KPIs vem agregados do servidor.
+    ranking_data = filter_rows_by_farm(ranking_data) if ok_ranking else ranking_data
+    alerts_data = filter_rows_by_farm(alerts_data) if ok_alerts else alerts_data
 
     summary = summary_data if ok_summary and isinstance(summary_data, dict) else {}
     total_predictions = safe_int(summary.get("total_predictions"))
@@ -971,6 +1340,12 @@ def render_overview_dashboard() -> None:
         render_metric_card("Sinistros potenciais", format_compact_number(potential_claims), "estimativa ilustrativa")
     with kpi_cols[4]:
         render_metric_card("Economia estimada", format_currency(estimated_savings), "estimativa ilustrativa")
+
+    if (st.session_state.get("_farm_ctx") or {}).get("farm_id") is not None:
+        st.caption(
+            "Indicadores acima consideram todas as fazendas; ranking e alertas mostram so a fazenda "
+            f"{selected_farm_caption()}."
+        )
 
     left, middle, right = st.columns([1.08, 1.62, 0.92])
 
@@ -1007,7 +1382,7 @@ def render_overview_dashboard() -> None:
         st.caption(f"{format_compact_number(total_predictions)} previsoes acumuladas")
         end_section()
 
-        begin_section("Ranking de equipamentos", "Ver ranking")
+        begin_section("Ranking de equipamentos", "Ver ranking", target="Ranking")
         render_ranking_cards(ranking_data if ok_ranking else [])
         end_section()
 
@@ -1090,7 +1465,7 @@ def render_overview_dashboard() -> None:
         end_section()
 
     with right:
-        begin_section("Alertas recentes", "Ver todos")
+        begin_section("Alertas recentes", "Ver todos", target="Alertas e auditoria")
         render_alert_cards(alerts_data if ok_alerts else [])
         end_section()
 
@@ -1405,9 +1780,10 @@ def render_prediction_result(resultado: dict, latitude: float, longitude: float)
 init_auth_state()
 
 render_sidebar_brand()
-st.sidebar.subheader("Acesso seguro")
+restore_kept_widgets()
 
 if not st.session_state.get("auth_token"):
+    st.sidebar.subheader("Acesso seguro")
     with st.sidebar.form("login_form"):
         login_username = st.text_input("Usuário", key="login_username")
         login_password = st.text_input("Senha", type="password", key="login_password")
@@ -1432,10 +1808,14 @@ if not st.session_state.get("auth_token"):
     st.warning("Faça login para acessar o dashboard seguro.")
     st.stop()
 else:
-    st.sidebar.success(f"Logado como: {st.session_state.get('auth_user')}")
-    st.sidebar.write(f"Perfil: **{st.session_state.get('auth_role')}**")
-    st.sidebar.write(f"Nome: **{st.session_state.get('auth_full_name')}**")
-
+    render_sidebar_farm_selector()
+    active_page = render_sidebar_navigation()
+    st.sidebar.divider()
+    st.sidebar.markdown(
+        f'<div style="font-size:.78rem;color:#9fb3b8">Logado como <b style="color:#e8f1f2">{_html_escape(str(st.session_state.get("auth_user")))}</b> '
+        f'({_html_escape(str(st.session_state.get("auth_role")))})<br>{_html_escape(str(st.session_state.get("auth_full_name") or ""))}</div>',
+        unsafe_allow_html=True,
+    )
     if st.sidebar.button("Sair", key="btn_logout"):
         logout_user()
 
@@ -1449,70 +1829,43 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
-render_topbar("Visao Geral", "Painel completo de gestao de riscos agricolas.")
+from html import escape as _escape_html  # noqa: E402
+
+_farm_name_for_topbar = selected_farm_caption()
+_subtitle = PAGE_SUBTITLES.get(active_page, "")
+if active_page not in {name for name, _ in NAV_ADMIN_GROUP[1]} and _farm_name_for_topbar:
+    _subtitle = f"{_subtitle} Fazenda: {_escape_html(_farm_name_for_topbar)}."
+render_topbar(NAV_DISPLAY.get(active_page, active_page), _subtitle)
 
 user_role = str(st.session_state.get("auth_role", "OPERADOR")).upper()
 
-tab_labels = [
-    "Visão Geral",
-    "Operação em tempo real",
-    "Resumo executivo",
-    "Ranking",
-    "Risco regional",
-    "Tendências",
-]
-
-if has_permission("telemetry.view"):
-    tab_labels.append("Telemetria")
-
-if has_permission("equipments.view"):
-    tab_labels.append("Equipamentos")
-
-if has_any_permission("audit.view", "alerts.view"):
-    tab_labels.append("Alertas e auditoria")
-
-if has_any_permission("alerts.manage", "settings.manage"):
-    tab_labels.append("Políticas de alerta")
-
-if has_permission("users.view"):
-    tab_labels.append("Administracao")
-
-tab_labels.extend(
-    [
-        "Simulador de risco",
-        "IA e ML",
-    ]
-)
-
-tabs = st.tabs(tab_labels)
-tab_map = dict(zip(tab_labels, tabs))
-
-with tab_map["Visão Geral"]:
+if active_page == "Visão Geral":
     render_overview_dashboard()
 
-with tab_map["Operação em tempo real"]:
-    st.sidebar.header("Dados da operação")
+if active_page == "Operação em tempo real":
+    with st.expander("Dados da operação (simulados)", expanded=True):
+        st.caption("Entradas manuais usadas para calcular o risco nesta tela.")
 
-    equipment_id = st.sidebar.number_input("ID do equipamento", min_value=1, value=1, step=1)
-    farm_id = st.sidebar.number_input("ID da fazenda", min_value=1, value=1, step=1)
-    region = st.sidebar.text_input("Região", value="Guarulhos - SP")
-    operation_type = st.sidebar.selectbox(
-        "Tipo de operação",
-        ["campo", "transporte", "proximidade_agua"],
-    )
+        equipment_id = st.number_input("ID do equipamento", min_value=1, value=1, step=1)
+        farm_id = st.number_input("ID da fazenda", min_value=1, value=1, step=1)
+        region = st.text_input("Região", value="Guarulhos - SP")
+        operation_type = st.selectbox(
+            "Tipo de operação",
+            ["campo", "transporte", "proximidade_agua"],
+        )
 
-    inclinacao = st.sidebar.slider("Inclinação do terreno", 0, 90, 12)
-    distancia_agua = st.sidebar.slider("Distância da água (manual / fallback)", 0, 1000, 20)
-    st.sidebar.caption("A análise principal usa a distância geográfica calculada pelas coordenadas.")
-    velocidade = st.sidebar.slider("Velocidade da máquina", 0, 200, 15)
-    historico_sinistros = st.sidebar.slider("Histórico de sinistros", 0, 20, 2)
-    solo_instavel = st.sidebar.selectbox("Solo instável", [0, 1])
+        inclinacao = st.slider("Inclinação do terreno", 0, 90, 12)
+        distancia_agua = st.slider("Distância da água (manual / fallback)", 0, 1000, 20)
+        st.caption("A análise principal usa a distância geográfica calculada pelas coordenadas.")
+        velocidade = st.slider("Velocidade da máquina", 0, 200, 15)
+        historico_sinistros = st.slider("Histórico de sinistros", 0, 20, 2)
+        solo_instavel = st.selectbox("Solo instável", [0, 1])
 
-    latitude = st.sidebar.number_input("Latitude", value=-23.4550000, step=0.000001, format="%.7f")
-    longitude = st.sidebar.number_input("Longitude", value=-46.5330000, step=0.000001, format="%.7f")
+        latitude = st.number_input("Latitude", value=-23.4550000, step=0.000001, format="%.7f")
+        longitude = st.number_input("Longitude", value=-46.5330000, step=0.000001, format="%.7f")
 
-    clima_base = st.sidebar.selectbox("Clima base", ["sol", "nublado", "chuva"], index=0)
-    chuva_mm_base = st.sidebar.slider("Chuva base (mm)", 0, 100, 0)
+        clima_base = st.selectbox("Clima base", ["sol", "nublado", "chuva"], index=0)
+        chuva_mm_base = st.slider("Chuva base (mm)", 0, 100, 0)
 
     col_a, col_b = st.columns([2, 1])
 
@@ -1602,7 +1955,7 @@ with tab_map["Operação em tempo real"]:
             else:
                 show_api_error("Erro ao enviar leitura ESP32", esp_result)
 
-with tab_map["Resumo executivo"]:
+if active_page == "Resumo executivo":
     st.markdown("### Resumo executivo Sompo")
 
     col_exec1, col_exec2 = st.columns([1, 1])
@@ -1624,7 +1977,7 @@ with tab_map["Resumo executivo"]:
     with col_exec2:
         ok_farms, farms_data = get_json(FARMS_URL)
         if ok_farms:
-            df_farms = any_to_dataframe(farms_data)
+            df_farms = filter_df_by_farm(any_to_dataframe(farms_data), kind="farm")
             st.markdown("#### Fazendas")
             if not df_farms.empty:
                 st.dataframe(df_farms, use_container_width=True)
@@ -1636,7 +1989,7 @@ with tab_map["Resumo executivo"]:
     ok_equipment, equipment_data = get_json(EQUIPMENT_URL)
     st.markdown("#### Equipamentos")
     if ok_equipment:
-        df_equipment = any_to_dataframe(equipment_data)
+        df_equipment = filter_df_by_farm(any_to_dataframe(equipment_data))
         if not df_equipment.empty:
             st.dataframe(df_equipment, use_container_width=True)
         else:
@@ -1644,7 +1997,7 @@ with tab_map["Resumo executivo"]:
     else:
         show_api_error("Erro ao carregar equipamentos", equipment_data)
 
-with tab_map["Ranking"]:
+if active_page == "Ranking":
     st.markdown("### Ranking de equipamentos")
 
     ok_ranking, ranking_data = get_json(EQUIPMENT_RISK_URL)
@@ -1652,7 +2005,7 @@ with tab_map["Ranking"]:
         ok_ranking, ranking_data = get_json(RANKING_URL)
 
     if ok_ranking:
-        df_ranking = any_to_dataframe(ranking_data)
+        df_ranking = filter_df_by_farm(any_to_dataframe(ranking_data))
 
         if not df_ranking.empty:
             st.dataframe(df_ranking, use_container_width=True)
@@ -1677,7 +2030,7 @@ with tab_map["Ranking"]:
     else:
         show_api_error("Erro ao carregar ranking", ranking_data)
 
-with tab_map["Risco regional"]:
+if active_page == "Risco regional":
     st.markdown("### Score de risco por regiao")
 
     ok_regions, region_data = get_json(REGION_RISK_URL)
@@ -1725,7 +2078,7 @@ with tab_map["Risco regional"]:
     else:
         show_api_error("Erro ao carregar risco regional", region_data)
 
-with tab_map["Tendências"]:
+if active_page == "Tendências":
     st.markdown("### Tendências de risco")
 
     ok_trends, trends_data = get_json(TRENDS_URL)
@@ -1783,7 +2136,10 @@ TELEMETRY_METRIC_LABELS = {
     "sequence_number": "Numero de sequencia",
 }
 # Colunas numericas que identificam registros e nao sao medicoes.
-TELEMETRY_METRIC_EXCLUDED = {"id", "iot_device_id", "equipment_id", "latitude", "longitude"}
+# boot_id e confidence_score ficam fora dos graficos (continuam na operacao e na tabela de leituras).
+TELEMETRY_METRIC_EXCLUDED = {
+    "id", "iot_device_id", "equipment_id", "latitude", "longitude", "boot_id", "confidence_score",
+}
 TELEMETRY_DEFAULT_METRICS = ["temperature_c", "humidity_pct", "acceleration_magnitude", "distance_cm"]
 TELEMETRY_CHART_TYPES = ["Linha", "Area", "Barras", "Pontos"]
 TELEMETRY_RESAMPLE_OPTIONS = {
@@ -1816,7 +2172,7 @@ TELEMETRY_SEGMENT_COLORS = {
     "Sem dados": "#8a8f98",
     "Reiniciou": "#c0392b",
 }
-TELEMETRY_PERIOD_HOURS = {"5m": 1, "1h": 1, "6h": 6, "24h": 24, "7d": 168, "30d": 168}
+TELEMETRY_PERIOD_HOURS = {"5m": 1, "1h": 1, "6h": 6, "24h": 24, "7d": 168, "30d": 168, "all": 168, "custom": 168}
 
 
 def telemetry_numeric_frame(hist_df: pd.DataFrame) -> pd.DataFrame:
@@ -1997,6 +2353,119 @@ def render_metric_explorer(hist_df: pd.DataFrame, time_col: str, key_prefix: str
             st.altair_chart(_panel(long, 320, y_title, True).interactive(bind_y=False), use_container_width=True)
 
 
+def format_duration_hm(seconds: Any) -> str:
+    """Duracao legivel em horas e minutos (ex.: '1 h 05 min', '6 min'); abaixo de 1 min mostra segundos."""
+    try:
+        total = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return "-"
+    if total < 60:
+        return f"{total} s"
+    hours, rest = divmod(total, 3600)
+    minutes = rest // 60
+    return f"{hours} h {minutes:02d} min" if hours else f"{minutes} min"
+
+
+CONNECTIVITY_CARD_CSS = """
+<style>
+.ag-conn-card{border:1px solid var(--ag-line, rgba(73,234,216,.18));border-radius:8px;padding:.4rem .65rem;
+background:linear-gradient(180deg, rgba(16,36,44,.95), rgba(8,18,23,.95));min-height:3.6rem;margin-bottom:.4rem}
+.ag-conn-title{font-size:.72rem;color:var(--ag-muted, #8fa3a8);margin-bottom:.05rem}
+.ag-conn-value{font-size:1.1rem;font-weight:700;line-height:1.25;color:var(--ag-text, #e8f1f2);
+overflow-wrap:anywhere;display:flex;align-items:center;gap:.45rem}
+.ag-conn-meta{font-size:.68rem;color:var(--ag-muted, #8fa3a8);margin-top:.15rem;overflow-wrap:anywhere}
+.ag-conn-dot{display:inline-block;width:.7rem;height:.7rem;border-radius:50%;flex:none}
+</style>
+"""
+CONNECTIVITY_TONE_COLORS = {"ok": "#1b7f5c", "warn": "#e08a00", "off": "#8a8f98", "bad": "#c0392b"}
+
+
+def render_connectivity_card(title: str, value: str, meta: str = "", tone: str = "") -> None:
+    from html import escape
+
+    color = CONNECTIVITY_TONE_COLORS.get(tone)
+    dot = f'<span class="ag-conn-dot" style="background:{color}"></span>' if color else ""
+    st.markdown(
+        f'<div class="ag-conn-card"><div class="ag-conn-title">{escape(title)}</div>'
+        f'<div class="ag-conn-value">{dot}<span>{escape(value)}</span></div>'
+        f'<div class="ag-conn-meta">{escape(meta)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_connectivity_cards(
+    data: dict, summary: dict, timeline: pd.DataFrame, generated: pd.Timestamp
+) -> None:
+    """Cartoes de conectividade em horas e minutos: ao vivo, offline com coleta e sem dados (perdido)."""
+    st.markdown(CONNECTIVITY_CARD_CSS, unsafe_allow_html=True)
+
+    def _seconds(kind: str) -> float:
+        label = TELEMETRY_SEGMENT_LABELS[kind]
+        part = timeline[timeline["Estado"] == label] if not timeline.empty else timeline
+        if part.empty:
+            return 0.0
+        return float((part["Fim"] - part["Inicio"]).dt.total_seconds().clip(lower=0).sum())
+
+    signal = data.get("signal_status")
+    last_seen = pd.to_datetime(data.get("last_seen_at"), utc=True, errors="coerce")
+    since_contact = (
+        f"contato ha {format_duration_hm((generated - last_seen).total_seconds())}"
+        if pd.notna(last_seen) and pd.notna(generated)
+        else "sem contato registrado"
+    )
+    last_reset = ""
+    for segment in reversed(data.get("segments", [])):
+        if segment.get("kind") == "reiniciou":
+            last_reset = f"ultimo: {segment.get('reset_reason') or 'motivo desconhecido'}"
+            break
+    missing = int(summary.get("missing_readings", 0) or 0)
+    lost_seconds = _seconds("sem_dados")
+
+    row1 = st.columns(3)
+    with row1[0]:
+        render_connectivity_card(
+            "Sinal",
+            "Com sinal" if signal == "COM_SINAL" else "Sem sinal" if signal == "SEM_SINAL" else "-",
+            since_contact,
+            "ok" if signal == "COM_SINAL" else "off",
+        )
+    with row1[1]:
+        render_connectivity_card(
+            "Ultimo contato",
+            format_local_time(data.get("last_seen_at"), "%H:%M:%S"),
+            format_local_time(data.get("last_seen_at"), "%d/%m/%Y", default=""),
+        )
+    with row1[2]:
+        restarts = int(summary.get("restarts", 0) or 0)
+        render_connectivity_card(
+            "Reinicios do ESP32", str(restarts), last_reset if restarts else "nenhum no periodo"
+        )
+    row2 = st.columns(3)
+    with row2[0]:
+        render_connectivity_card(
+            "Tempo ao vivo",
+            format_duration_hm(_seconds("online")),
+            f"{int(summary.get('online_readings', 0) or 0)} leituras enviadas na hora",
+            "ok",
+        )
+    with row2[1]:
+        render_connectivity_card(
+            "Offline com coleta",
+            format_duration_hm(_seconds("offline_com_coleta")),
+            f"{int(summary.get('offline_com_coleta_readings', 0) or 0)} leituras guardadas e entregues depois",
+            "warn",
+        )
+    with row2[2]:
+        render_connectivity_card(
+            "Sem dados (perdido)",
+            format_duration_hm(lost_seconds),
+            f"{missing} leitura(s) nao recebida(s)"
+            if missing
+            else ("sem coleta neste intervalo" if lost_seconds else "nenhuma lacuna"),
+            "off" if lost_seconds else "",
+        )
+
+
 def render_connectivity_timeline(device_id: str | None, period_code: str) -> None:
     """Faixa de conectividade e linha do tempo: online, offline com coleta, reiniciou e sem dados."""
     if not device_id:
@@ -2008,23 +2477,6 @@ def render_connectivity_timeline(device_id: str | None, period_code: str) -> Non
         st.caption("Linha do tempo de conectividade indisponivel (servidor sem o recurso ou sem permissao).")
         return
     summary = data.get("summary") or {}
-    signal = data.get("signal_status") or "-"
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Sinal", "Com sinal" if signal == "COM_SINAL" else "Sem sinal" if signal == "SEM_SINAL" else "-")
-    m2.metric("Ultimo contato", format_local_time(data.get("last_seen_at")))
-    m3.metric("Ao vivo", summary.get("online_readings", 0))
-    m4.metric("Offline com coleta", summary.get("offline_com_coleta_readings", 0))
-    m5.metric("Reinicios", summary.get("restarts", 0))
-    m6.metric("Leituras perdidas", summary.get("missing_readings", 0))
-    if period_code == "30d":
-        st.caption("A linha do tempo cobre no maximo as ultimas 168 horas (7 dias).")
-    if summary.get("currently_silent"):
-        st.warning("O dispositivo esta sem enviar dados neste momento (segmento 'Sem dados' em aberto).")
-    if summary.get("unknown_time_readings"):
-        st.caption(
-            f"{summary['unknown_time_readings']} leitura(s) sem horario confiavel do ESP32 "
-            "foram datadas na chegada e nao entram na deteccao de lacunas."
-        )
 
     generated = pd.to_datetime(data.get("generated_at"), utc=True, errors="coerce")
     rows = []
@@ -2051,7 +2503,7 @@ def render_connectivity_timeline(device_id: str | None, period_code: str) -> Non
             end = generated
         detail = ""
         if kind == "sem_dados":
-            detail = f"{segment.get('missing_readings', 0)} leitura(s) descartada(s) pelo buffer"
+            detail = f"{segment.get('missing_readings', 0)} leitura(s) nao recebida(s) (sequencia pulada)"
             if segment.get("open"):
                 detail += " | em aberto"
         elif kind == "offline_com_coleta":
@@ -2068,12 +2520,25 @@ def render_connectivity_timeline(device_id: str | None, period_code: str) -> Non
                 "Detalhe": detail,
             }
         )
+    if rows:
+        timeline = pd.DataFrame(rows)
+        for column in ("Inicio", "Fim"):
+            timeline[column] = timeline[column].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+    else:
+        timeline = pd.DataFrame(columns=["Estado", "Inicio", "Fim", "Leituras", "Duracao (s)", "Detalhe"])
+    render_connectivity_cards(data, summary, timeline, generated)
+    if period_code == "30d":
+        st.caption("A linha do tempo cobre no maximo as ultimas 168 horas (7 dias).")
+    if summary.get("currently_silent"):
+        st.warning("O dispositivo esta sem enviar dados neste momento (segmento 'Sem dados' em aberto).")
+    if summary.get("unknown_time_readings"):
+        st.caption(
+            f"{summary['unknown_time_readings']} leitura(s) sem horario confiavel do ESP32 "
+            "foram datadas na chegada e nao entram na deteccao de lacunas."
+        )
     if not rows:
         st.info("Sem segmentos de telemetria no periodo.")
         return
-    timeline = pd.DataFrame(rows)
-    for column in ("Inicio", "Fim"):
-        timeline[column] = timeline[column].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
 
     bars = timeline[timeline["Estado"] != TELEMETRY_SEGMENT_LABELS["reiniciou"]]
     marks = timeline[timeline["Estado"] == TELEMETRY_SEGMENT_LABELS["reiniciou"]]
@@ -2116,101 +2581,620 @@ def render_connectivity_timeline(device_id: str | None, period_code: str) -> Non
         st.dataframe(timeline, use_container_width=True)
 
 
-if "Telemetria" in tab_map:
-    with tab_map["Telemetria"]:
-        st.markdown("### Central de Telemetria")
+TRACTOR_3D_HTML = """
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+html,body{margin:0;background:transparent;font-family:Segoe UI,Arial,sans-serif;color:#e8f1f2}
+#box{position:relative;width:100%;height:__HEIGHT__px;border:1px solid rgba(73,234,216,.22);border-radius:10px;
+background:radial-gradient(circle at 50% 30%,#12303b 0%,#0a1a22 70%);overflow:hidden;touch-action:none;cursor:grab}
+#info{position:absolute;left:10px;top:8px;font-size:12px;line-height:1.55;pointer-events:none;
+background:rgba(7,16,24,.62);padding:6px 9px;border-radius:8px}
+#legend{position:absolute;right:10px;bottom:8px;font-size:11px;line-height:1.5;pointer-events:none;
+background:rgba(7,16,24,.62);padding:5px 9px;border-radius:8px;color:#b7c8cc}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
+#hint{position:absolute;left:10px;bottom:8px;font-size:11px;color:#7f9498;pointer-events:none}
+</style></head><body>
+<div id="box"><div id="info"></div><div id="legend"></div><div id="hint">Arraste para girar a vista</div></div>
+<script src="__THREE_SRC__"></script>
+<script>
+(function(){
+const D = __DATA__;
+const box = document.getElementById('box');
+if (typeof THREE === 'undefined') {
+  box.insertAdjacentHTML('beforeend','<div style="padding:2.2rem 1rem;color:#9fb3b8;font-size:13px">Visualizador 3D indisponivel: a biblioteca three.js nao foi carregada (verifique a conexao com a internet do navegador).</div>');
+  return;
+}
+const num = (v, d) => (v === null || v === undefined || isNaN(v)) ? 0 : v;
+let W = box.getBoundingClientRect().width || 640, H = __HEIGHT__;
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(window.devicePixelRatio || 1);
+renderer.setSize(W, H);
+box.insertBefore(renderer.domElement, box.firstChild);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
+scene.add(new THREE.AmbientLight(0xffffff, 0.72));
+const sun = new THREE.DirectionalLight(0xffffff, 0.75); sun.position.set(4, 8, 5); scene.add(sun);
+scene.add(new THREE.GridHelper(12, 24, 0x2b5560, 0x16303a));
 
-        ok_equipment, equipment_rows = get_json(EQUIPMENTS_URL)
-        equipment_df = any_to_dataframe(equipment_rows if ok_equipment else [])
-        if equipment_df.empty:
-            st.info("Nenhum equipamento disponivel para telemetria.")
-        else:
-            labels = [
-                f"{int(row['equipment_id'])} - {row.get('equipment_name', row.get('name', 'Equipamento'))}"
-                for _, row in equipment_df.iterrows()
-            ]
-            selected_label = st.selectbox("Equipamento", labels, key="telemetry_equipment_select")
-            selected_equipment_id = int(selected_label.split(" - ")[0])
+const riskColors = {baixo:0x2fd27d, medio:0xffc857, alto:0xff5d5d};
+const riskKey = String(D.risk_level || '').toLowerCase();
+const riskColor = riskKey.indexOf('alt') === 0 || riskKey.indexOf('high') === 0 || riskKey.indexOf('crit') === 0 ? riskColors.alto
+  : riskKey.indexOf('med') === 0 ? riskColors.medio : riskColors.baixo;
+const ring = new THREE.Mesh(new THREE.RingGeometry(2.55, 2.7, 64), new THREE.MeshBasicMaterial({color:riskColor, side:THREE.DoubleSide}));
+ring.rotation.x = -Math.PI / 2; ring.position.y = 0.01; scene.add(ring);
 
-            period_label = st.selectbox(
-                "Periodo",
-                ["Ultimos 5 minutos", "Ultima hora", "Ultimas 6 horas", "24 horas", "7 dias", "30 dias"],
-                index=1,
-                key="telemetry_period",
+const pivot = new THREE.Group(); pivot.position.y = 0.8; scene.add(pivot);
+const model = new THREE.Group(); model.position.y = -0.8; pivot.add(model);
+const lam = (c, o) => new THREE.MeshLambertMaterial(Object.assign({color:c}, o || {}));
+function addBox(w, h, d, x, y, z, m){ const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); mesh.position.set(x, y, z); model.add(mesh); return mesh; }
+function addWheel(r, wdt, x, z){
+  const tire = new THREE.Mesh(new THREE.CylinderGeometry(r, r, wdt, 28), lam(0x20262b));
+  tire.rotation.x = Math.PI / 2; tire.position.set(x, r, z); model.add(tire);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.55, r * 0.55, wdt + 0.02, 20), lam(0xe6b422));
+  hub.rotation.x = Math.PI / 2; hub.position.set(x, r, z); model.add(hub);
+}
+addBox(2.7, 0.45, 1.0, 0, 0.75, 0, lam(0x2e9d4f));
+addBox(1.35, 0.6, 0.82, 0.78, 1.18, 0, lam(0x25803f));
+addBox(1.0, 0.95, 0.92, -0.6, 1.42, 0, lam(0x9fd4e8, {transparent:true, opacity:0.55}));
+addBox(1.15, 0.08, 1.05, -0.6, 1.93, 0, lam(0x1f6b36));
+const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.7, 12), lam(0x333a40)); pipe.position.set(1.05, 1.8, 0.2); model.add(pipe);
+addWheel(0.66, 0.38, -0.95, 0.72); addWheel(0.66, 0.38, -0.95, -0.72);
+addWheel(0.4, 0.28, 1.05, 0.66); addWheel(0.4, 0.28, 1.05, -0.66);
+
+// Sensor (X frente, Y esquerda, Z cima) -> cena (X frente, Y cima, Z direita)
+const mapV = v => new THREE.Vector3(v[0], v[2], -v[1]);
+function thickArrow(dir, origin, length, color){
+  const g = new THREE.Group(); const m = new THREE.MeshBasicMaterial({color:color});
+  const head = Math.min(0.55, length * 0.4), shaft = Math.max(0.05, length - head);
+  const s = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, shaft, 10), m); s.position.y = shaft / 2; g.add(s);
+  const c = new THREE.Mesh(new THREE.ConeGeometry(0.14, head, 14), m); c.position.y = shaft + head / 2; g.add(c);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  g.position.copy(origin); return g;
+}
+// aceleracao dinamica (medida menos a gravidade estimada)
+let dynText = 'estavel';
+if (D.dyn) {
+  const v = mapV(D.dyn), mag = v.length();
+  if (mag > 0.15) {
+    pivot.add(thickArrow(v, new THREE.Vector3(0, 1.15, 0), Math.min(3.2, 1.0 + mag * 0.6), 0xff9f1c));
+    const ax = Math.abs(D.dyn[0]), ay = Math.abs(D.dyn[1]), az = Math.abs(D.dyn[2]);
+    let dirTxt = ax >= ay && ax >= az ? (D.dyn[0] >= 0 ? 'para a frente' : 'para tras')
+      : ay >= az ? (D.dyn[1] >= 0 ? 'para a esquerda' : 'para a direita') : (D.dyn[2] >= 0 ? 'para cima' : 'para baixo');
+    dynText = mag.toFixed(1) + ' m/s2 ' + dirTxt;
+  }
+} else { dynText = 'sem dados'; }
+// giroscopio: arcos em volta de cada eixo, proporcionais a taxa de giro (graus/s)
+const rates = D.gyro ? [num(D.gyro[0]), num(D.gyro[2]), -num(D.gyro[1])] : [0, 0, 0];
+const axes = [
+  {u:[0,1,0], v:[0,0,1], R:1.35, color:0xff5d5d},
+  {u:[0,0,1], v:[1,0,0], R:1.9,  color:0x5dffb0},
+  {u:[1,0,0], v:[0,1,0], R:1.6,  color:0x5da8ff},
+];
+axes.forEach((a, i) => {
+  const w = rates[i]; if (Math.abs(w) < 4) return;
+  const sweep = Math.min(1.7 * Math.PI, Math.max(0.45, Math.abs(w) / 90 * Math.PI)), sign = w >= 0 ? 1 : -1;
+  const u = new THREE.Vector3(...a.u), v = new THREE.Vector3(...a.v), pts = [];
+  for (let k = 0; k <= 40; k++) {
+    const ang = sign * sweep * k / 40;
+    pts.push(u.clone().multiplyScalar(Math.cos(ang) * a.R).add(v.clone().multiplyScalar(Math.sin(ang) * a.R)).add(new THREE.Vector3(0, 0.55, 0)));
+  }
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 60, 0.04, 8), new THREE.MeshBasicMaterial({color:a.color}));
+  pivot.add(tube);
+  const endAng = sign * sweep;
+  const tangent = u.clone().multiplyScalar(-Math.sin(endAng)).add(v.clone().multiplyScalar(Math.cos(endAng))).multiplyScalar(sign).normalize();
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.36, 14), new THREE.MeshBasicMaterial({color:a.color}));
+  cone.position.copy(pts[pts.length - 1]); cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent); pivot.add(cone);
+});
+// inclinacao do trator (pitch: nariz para cima; roll: lado direito para baixo)
+const rad = d => num(d) * Math.PI / 180;
+pivot.rotation.set(rad(D.roll), 0, rad(D.pitch), 'XYZ');
+
+const f1 = v => (v === null || v === undefined || isNaN(v)) ? 'N/D' : Number(v).toFixed(1);
+const rateTxt = n => Math.abs(n) < 4 ? 'parado' : (n >= 0 ? '+' : '') + n.toFixed(0) + ' dps';
+document.getElementById('info').innerHTML =
+  '<b>Inclinacao</b> ' + f1(D.inclination) + ' deg &nbsp;|&nbsp; pitch ' + f1(D.pitch) + ' &nbsp;roll ' + f1(D.roll) +
+  '<br><b>Aceleracao dinamica</b> ' + dynText +
+  '<br><b>Giro</b> rolagem ' + rateTxt(rates[0]) + ' &middot; arfagem ' + rateTxt(-rates[2]) + ' &middot; guinada ' + rateTxt(rates[1]);
+document.getElementById('legend').innerHTML =
+  '<span class="sw" style="background:#ff9f1c"></span>seta: aceleracao dinamica (tamanho = intensidade)<br>' +
+  '<span class="sw" style="background:#ff5d5d"></span>rolagem <span class="sw" style="background:#5da8ff;margin-left:6px"></span>arfagem ' +
+  '<span class="sw" style="background:#5dffb0;margin-left:6px"></span>guinada (arcos = giro)<br>' +
+  '<span class="sw" style="background:#' + riskColor.toString(16).padStart(6,'0') + '"></span>anel: nivel de risco ' + (D.risk_level || 'N/D');
+
+let theta = 0.75, phi = 0.38, radius = 8.2, drag = null;
+function render(){
+  camera.position.set(radius * Math.cos(phi) * Math.cos(theta), radius * Math.sin(phi) + 0.9, radius * Math.cos(phi) * Math.sin(theta));
+  camera.lookAt(0, 0.9, 0); renderer.render(scene, camera);
+}
+const el = renderer.domElement;
+el.addEventListener('pointerdown', e => { drag = {x:e.clientX, y:e.clientY}; el.setPointerCapture(e.pointerId); box.style.cursor = 'grabbing'; });
+el.addEventListener('pointerup', () => { drag = null; box.style.cursor = 'grab'; });
+el.addEventListener('pointermove', e => {
+  if (!drag) return;
+  theta -= (e.clientX - drag.x) * 0.008; phi = Math.min(1.3, Math.max(0.05, phi + (e.clientY - drag.y) * 0.006));
+  drag = {x:e.clientX, y:e.clientY}; render();
+});
+window.addEventListener('resize', () => {
+  W = box.getBoundingClientRect().width || W; renderer.setSize(W, H); camera.aspect = W / H; camera.updateProjectionMatrix(); render();
+});
+render();
+})();
+</script></body></html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Central de Telemetria: painel enxuto, trator 3D e tabela de leituras
+# ---------------------------------------------------------------------------
+# (id, rotulo, visivel por padrao). O usuario liga/desliga cada bloco em "Personalizar painel".
+TELEMETRY_PANEL_SECTIONS = [
+    ("status", "Resumo de status", True),
+    ("trator", "Trator 3D (movimento)", True),
+    ("sensores", "Sensores principais", True),
+    ("conectividade", "Conectividade", True),
+    ("grafico", "Grafico customizavel", True),
+    ("leituras", "Tabela de leituras", True),
+    ("ambiente", "Ambiente (BME280)", False),
+    ("movimento_cru", "Aceleracao e giroscopio (valores)", False),
+    ("gps_energia", "GPS e bateria", False),
+    ("qualidade", "Qualidade do dado", False),
+    ("ia", "Explicacao da IA", False),
+]
+TELEMETRY_PERIOD_CHOICES = {
+    "Ultimos 5 minutos": "5m",
+    "Ultima hora": "1h",
+    "Ultimas 6 horas": "6h",
+    "24 horas": "24h",
+    "7 dias": "7d",
+    "30 dias": "30d",
+    "Tudo (ate 5000 leituras)": "all",
+    "Personalizado": "custom",
+}
+TELEMETRY_EVENT_PERIODS = {"5m", "1h", "6h", "24h", "7d", "30d"}
+THREE_JS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+MINI_TILE_CSS = """
+<style>
+.ag-mini-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:.45rem;margin:.2rem 0 .6rem}
+.ag-mini{border:1px solid var(--ag-line, rgba(73,234,216,.18));border-radius:8px;padding:.35rem .6rem;
+background:linear-gradient(180deg, rgba(16,36,44,.95), rgba(8,18,23,.95))}
+.ag-mini-label{font-size:.68rem;color:var(--ag-muted, #8fa3a8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ag-mini-value{font-size:1rem;font-weight:700;color:var(--ag-text, #e8f1f2);display:flex;align-items:center;gap:.35rem;
+overflow-wrap:anywhere}
+.ag-mini-dot{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;flex:none}
+</style>
+"""
+
+
+def reset_telemetry_panel() -> None:
+    for section_id, _label, default in TELEMETRY_PANEL_SECTIONS:
+        st.session_state[f"keep_tp_{section_id}"] = default
+
+
+def render_mini_tiles(items: list[tuple[str, Any, str]]) -> None:
+    """Caixas compactas (rotulo + valor) em grade; tom opcional: ok, warn, bad, off."""
+    from html import escape
+
+    st.markdown(MINI_TILE_CSS, unsafe_allow_html=True)
+    cells = []
+    for label, value, tone in items:
+        color = CONNECTIVITY_TONE_COLORS.get(tone)
+        dot = f'<span class="ag-mini-dot" style="background:{color}"></span>' if color else ""
+        cells.append(
+            f'<div class="ag-mini"><div class="ag-mini-label">{escape(str(label))}</div>'
+            f'<div class="ag-mini-value">{dot}<span>{escape(str(value))}</span></div></div>'
+        )
+    st.markdown('<div class="ag-mini-grid">' + "".join(cells) + "</div>", unsafe_allow_html=True)
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def risk_tone(level: Any) -> str:
+    text = str(level or "").lower()
+    if text.startswith(("alt", "high", "crit")):
+        return "bad"
+    if text.startswith(("med",)):
+        return "warn"
+    return "ok" if text else ""
+
+
+def estimate_gravity_vector(hist_df: pd.DataFrame, window: int = 60) -> list[float] | None:
+    """Gravidade no referencial do sensor = mediana das ultimas leituras (independe da montagem)."""
+    columns = ["accel_x", "accel_y", "accel_z"]
+    if hist_df.empty or not set(columns).issubset(hist_df.columns):
+        return None
+    recent = hist_df[columns].apply(pd.to_numeric, errors="coerce").dropna().tail(window)
+    if len(recent) < 3:
+        return None
+    return [float(recent[column].median()) for column in columns]
+
+
+def render_tractor_3d(latest: dict, hist_df: pd.DataFrame) -> None:
+    """Trator 3D inclinado (pitch/roll) com seta de aceleracao dinamica e arcos de giro do giroscopio."""
+    accel = [_finite(latest.get(key)) for key in ("accel_x", "accel_y", "accel_z")]
+    gravity = estimate_gravity_vector(hist_df)
+    dyn = None
+    if gravity is not None and all(value is not None for value in accel):
+        dyn = [accel[i] - gravity[i] for i in range(3)]
+    gyro = [_finite(latest.get(key)) for key in ("gyro_x", "gyro_y", "gyro_z")]
+    payload = {
+        "pitch": _finite(latest.get("pitch")),
+        "roll": _finite(latest.get("roll")),
+        "inclination": _finite(latest.get("inclination_deg")),
+        "dyn": dyn,
+        "gyro": [value or 0.0 for value in gyro] if any(value is not None for value in gyro) else None,
+        "risk_level": str(latest.get("risk_level") or ""),
+    }
+    height = 380
+    html = (
+        TRACTOR_3D_HTML.replace("__HEIGHT__", str(height))
+        .replace("__THREE_SRC__", THREE_JS_SRC)
+        .replace("__DATA__", json.dumps(payload))
+    )
+    components.html(html, height=height + 6)
+    st.caption(
+        "Assume sensor com X para a frente, Y para a esquerda e Z para cima. A aceleracao dinamica e a "
+        "leitura atual menos a gravidade estimada pelas ultimas leituras; arcos aparecem acima de 4 graus/s."
+    )
+
+
+READING_COLUMN_LABELS = {
+    "recorded_at": "Horario da leitura",
+    "received_at": "Recebido pelo servidor",
+    "ingestion_mode": "Origem do envio",
+    "time_quality": "Qualidade do horario",
+    "data_quality_status": "Qualidade do dado",
+    "data_quality_issues": "Problemas de qualidade",
+    "missing_sensors": "Sensores ausentes",
+    "risk_level": "Nivel de risco",
+    "risk_score": "Risk score",
+    "explicacao": "Explicacao da IA",
+    "eventos": "Eventos",
+    "tipos_de_evento": "Tipos de evento",
+    "gravidade_max": "Gravidade maxima",
+    "descricao_eventos": "Descricao dos eventos",
+    "device_id": "Dispositivo",
+    "possible_impact": "Possivel impacto",
+    "obstacle_detected": "Obstaculo detectado",
+    "ingestion_delay_seconds": "Atraso de entrega (s)",
+    "telemetry_status": "Status da telemetria",
+}
+READING_PRESETS = {
+    "Essenciais": [
+        "recorded_at", "risk_level", "risk_score", "inclination_deg", "distance_cm", "acceleration_magnitude",
+        "possible_impact", "battery_voltage", "data_quality_status", "eventos", "tipos_de_evento",
+    ],
+    "Movimento (MPU)": [
+        "recorded_at", "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z", "pitch", "roll",
+        "inclination_deg", "acceleration_magnitude", "movement_anomaly_score", "possible_impact",
+    ],
+    "Ambiente e energia": [
+        "recorded_at", "temperature_c", "humidity_pct", "pressure_hpa", "altitude_m", "battery_voltage",
+    ],
+    "Eventos e IA": [
+        "recorded_at", "risk_level", "risk_score", "eventos", "tipos_de_evento", "gravidade_max",
+        "descricao_eventos", "explicacao",
+    ],
+    "Todas as colunas": None,
+}
+EVENT_SEVERITY_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+
+def reading_label(column: str) -> str:
+    return READING_COLUMN_LABELS.get(column) or TELEMETRY_METRIC_LABELS.get(column) or column
+
+
+def build_readings_frame(hist_df: pd.DataFrame, events: list[dict]) -> pd.DataFrame:
+    """Uma linha por leitura com tudo o que foi gerado a partir dela (risco, qualidade, eventos, IA)."""
+    frame = hist_df.copy()
+    if "explanation" in frame.columns:
+        frame["explicacao"] = frame["explanation"].apply(
+            lambda value: value.get("summary") if isinstance(value, dict) else value
+        )
+    for column in list(frame.columns):
+        values = frame[column]
+        if values.map(lambda value: isinstance(value, dict)).any():
+            frame = frame.drop(columns=[column])
+        elif values.map(lambda value: isinstance(value, list)).any():
+            frame[column] = values.map(
+                lambda value: " | ".join(str(item) for item in value) if isinstance(value, list) else value
             )
-            period_map = {
-                "Ultimos 5 minutos": "5m",
-                "Ultima hora": "1h",
-                "Ultimas 6 horas": "6h",
-                "24 horas": "24h",
-                "7 dias": "7d",
-                "30 dias": "30d",
-            }
-            refresh_cols = st.columns([1, 1, 4])
-            auto_refresh = refresh_cols[0].checkbox("Auto", value=False, key="telemetry_auto")
-            refresh_seconds = refresh_cols[1].number_input("Segundos", min_value=2, max_value=60, value=5, step=1)
 
-            def _render_telemetry_live(equipment_id, period_code):
-                # Fragmento: com "Auto" ligado, so este bloco recarrega a cada N segundos
-                # (st.fragment run_every), sem time.sleep/st.rerun nem travar as outras abas.
-                ok_latest, latest_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/telemetry/latest")
-                ok_risk, risk_data = get_json(f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/risk/current")
-                ok_history, history_data = get_json(
-                    f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/telemetry/history?period={period_code}&limit=5000"
-                )
-                ok_events, events_data = get_json(
-                    f"{API_BASE_URL}/api/v1/equipments/{equipment_id}/iot-events?period={period_code}"
-                )
+    by_reading: dict[int, list[dict]] = {}
+    for event in events or []:
+        reading_id = _as_int(event.get("telemetry_id"))
+        if reading_id is not None:
+            by_reading.setdefault(reading_id, []).append(event)
 
-                latest = latest_data.get("telemetry") if ok_latest and isinstance(latest_data, dict) else None
-                if latest:
-                    m1, m2, m3, m4, m5 = st.columns(5)
-                    m1.metric("ESP32", latest.get("device_id", "-"))
-                    m2.metric("Status", latest_data.get("device_status", latest.get("telemetry_status", "-")))
-                    m3.metric("Idade", format_measurement(latest.get("telemetry_age_seconds"), "s", 0))
-                    m4.metric("Risk Score", latest.get("risk_score", "-"))
-                    m5.metric("Risco", latest.get("risk_level", "-"))
+    def _summarize(reading_id: Any, field: str) -> Any:
+        items = by_reading.get(_as_int(reading_id) if reading_id is not None else None, [])
+        if field == "eventos":
+            return len(items)
+        if not items:
+            return None
+        if field == "tipos_de_evento":
+            return ", ".join(sorted({str(item.get("event_type")) for item in items if item.get("event_type")}))
+        if field == "gravidade_max":
+            return max((str(item.get("severity") or "") for item in items), key=lambda s: EVENT_SEVERITY_ORDER.get(s.upper(), 0))
+        return " | ".join(str(item.get("description")) for item in items if item.get("description"))
 
-                    b1, b2, b3 = st.columns(3)
-                    b1.metric("BME temperatura", format_measurement(latest.get("temperature_c"), "C"))
-                    b2.metric("BME umidade", format_measurement(latest.get("humidity_pct"), "%"))
-                    b3.metric("BME pressao", format_measurement(latest.get("pressure_hpa"), "hPa"))
+    id_series = frame["id"] if "id" in frame.columns else pd.Series([None] * len(frame), index=frame.index)
+    for field in ("eventos", "tipos_de_evento", "gravidade_max", "descricao_eventos"):
+        frame[field] = id_series.map(lambda reading_id, f=field: _summarize(reading_id, f))
+    return frame
 
-                    p1, p2, p3 = st.columns(3)
-                    p1.metric("MPU accel X", format_measurement(latest.get("accel_x"), "m/s2", 2))
-                    p2.metric("MPU accel Y", format_measurement(latest.get("accel_y"), "m/s2", 2))
-                    p3.metric("MPU accel Z", format_measurement(latest.get("accel_z"), "m/s2", 2))
 
-                    q1, q2, q3 = st.columns(3)
-                    q1.metric("MPU magnitude", format_measurement(latest.get("acceleration_magnitude"), "m/s2", 2))
-                    q2.metric(
-                        "MPU pitch / roll",
-                        f"{format_measurement(latest.get('pitch'), 'deg')} / {format_measurement(latest.get('roll'), 'deg')}",
+def render_readings_table(hist_df: pd.DataFrame, events: list[dict], events_truncated: bool) -> None:
+    """Registro de leituras do equipamento: colunas, ordem e filtros escolhidos pelo usuario."""
+    frame = build_readings_frame(hist_df, events)
+    if frame.empty:
+        st.info("Sem leituras no periodo selecionado.")
+        return
+    all_columns = list(frame.columns)
+    st.caption(
+        f"{len(frame)} leitura(s) no periodo. Cada linha traz o que foi gerado a partir da leitura: "
+        f"risco, qualidade, eventos e explicacao. Horarios no fuso {LOCAL_TZ_LABEL}."
+    )
+    if len(frame) >= 5000:
+        st.caption("Limite de 5000 leituras atingido: reduza o periodo para ver as mais antigas.")
+    if events_truncated:
+        st.caption("Ha mais de 1000 eventos no periodo; leituras mais antigas podem aparecer sem eventos.")
+
+    with st.expander("Colunas, ordem e filtros", expanded=False):
+        preset_names = list(READING_PRESETS)
+        sanitize_choice_state("keep_rd_preset", preset_names)
+        preset = st.selectbox("Conjunto de colunas", preset_names, key="keep_rd_preset")
+        preset_columns = READING_PRESETS[preset]
+        default_columns = all_columns if preset_columns is None else [c for c in preset_columns if c in all_columns]
+        columns_key = f"keep_rd_columns_{preset}"
+        sanitize_choice_state(columns_key, all_columns, multiple=True)
+        st.session_state.setdefault(columns_key, default_columns)
+        visible = st.multiselect(
+            "Colunas visiveis (adicione ou remova)",
+            all_columns,
+            format_func=reading_label,
+            key=columns_key,
+        )
+
+        f1, f2, f3 = st.columns(3)
+        sort_options = visible or all_columns
+        sanitize_choice_state("keep_rd_sort", sort_options)
+        st.session_state.setdefault("keep_rd_sort", "recorded_at" if "recorded_at" in sort_options else sort_options[0])
+        sort_column = f1.selectbox("Ordenar por", sort_options, format_func=reading_label, key="keep_rd_sort")
+        sanitize_choice_state("keep_rd_order", ["Mais recentes primeiro", "Mais antigas primeiro"])
+        st.session_state.setdefault("keep_rd_order", "Mais recentes primeiro")
+        newest_first = f2.radio(
+            "Ordem", ["Mais recentes primeiro", "Mais antigas primeiro"], key="keep_rd_order"
+        ) == "Mais recentes primeiro"
+        st.session_state.setdefault("keep_rd_only_events", False)
+        only_events = f3.checkbox("So leituras com eventos", key="keep_rd_only_events")
+
+        g1, g2, g3, g4 = st.columns(4)
+        filtered = frame
+        for column, widget, label in (
+            ("risk_level", g1, "Nivel de risco"),
+            ("ingestion_mode", g2, "Origem do envio"),
+            ("data_quality_status", g3, "Qualidade do dado"),
+            ("gravidade_max", g4, "Gravidade do evento"),
+        ):
+            if column in filtered.columns:
+                options = sorted({str(value) for value in filtered[column].dropna()})
+                if options:
+                    key = f"keep_rd_f_{column}"
+                    sanitize_choice_state(key, options, multiple=True)
+                    chosen = widget.multiselect(label, options, key=key)
+                    if chosen:
+                        filtered = filtered[filtered[column].astype(str).isin(chosen)]
+        if only_events:
+            filtered = filtered[filtered["eventos"] > 0]
+        st.session_state.setdefault("keep_rd_search", "")
+        search = st.text_input("Buscar texto (eventos, explicacao, problemas)", key="keep_rd_search")
+        if search.strip():
+            text_columns = [c for c in ("tipos_de_evento", "descricao_eventos", "explicacao", "data_quality_issues") if c in filtered.columns]
+            needle = search.strip().lower()
+            mask = pd.Series(False, index=filtered.index)
+            for column in text_columns:
+                mask |= filtered[column].astype(str).str.lower().str.contains(needle, regex=False, na=False)
+            filtered = filtered[mask]
+
+    shown_columns = [c for c in (visible or default_columns) if c in filtered.columns]
+    if not shown_columns:
+        st.info("Escolha ao menos uma coluna.")
+        return
+    if sort_column in filtered.columns:
+        try:
+            filtered = filtered.sort_values(sort_column, ascending=not newest_first, na_position="last", kind="stable")
+        except TypeError:
+            filtered = filtered.sort_values(
+                sort_column, ascending=not newest_first, na_position="last", kind="stable", key=lambda col: col.astype(str)
+            )
+    table = filtered[shown_columns].rename(columns={c: reading_label(c) for c in shown_columns})
+    st.caption(f"Exibindo {len(table)} de {len(frame)} leitura(s). Clique no cabecalho da coluna para reordenar.")
+    st.dataframe(table, use_container_width=True, hide_index=True, height=460)
+    st.download_button(
+        "Baixar CSV (colunas e filtros atuais)",
+        table.to_csv(index=False).encode("utf-8-sig"),
+        file_name="leituras_telemetria.csv",
+        mime="text/csv",
+        key="rd_download",
+    )
+
+
+
+if active_page == "Telemetria":
+    st.markdown("### Central de Telemetria")
+
+    ok_equipment, equipment_rows = get_json(EQUIPMENTS_URL)
+    equipment_df = filter_df_by_farm(any_to_dataframe(equipment_rows if ok_equipment else []))
+    if equipment_df.empty:
+        st.info(
+            "Nenhum equipamento disponivel para telemetria"
+            + (f" na fazenda {selected_farm_caption()}." if (st.session_state.get("_farm_ctx") or {}).get("farm_id") is not None else ".")
+        )
+    else:
+        labels = [
+            f"{int(row['equipment_id'])} - {row.get('equipment_name', row.get('name', 'Equipamento'))}"
+            for _, row in equipment_df.iterrows()
+        ]
+        period_labels = list(TELEMETRY_PERIOD_CHOICES)
+        sanitize_choice_state("keep_tel_equipment", labels)
+        sanitize_choice_state("keep_tel_period", period_labels)
+        st.session_state.setdefault("keep_tel_period", "Ultima hora")
+        st.session_state.setdefault("keep_tel_auto", False)
+        st.session_state.setdefault("keep_tel_seconds", 5)
+        for _section_id, _section_label, _section_default in TELEMETRY_PANEL_SECTIONS:
+            st.session_state.setdefault(f"keep_tp_{_section_id}", _section_default)
+
+        top = st.columns([2.4, 1.9, 0.9, 1.5], vertical_alignment="bottom")
+        selected_label = top[0].selectbox("Equipamento", labels, key="keep_tel_equipment")
+        selected_equipment_id = int(selected_label.split(" - ")[0])
+        period_label = top[1].selectbox("Periodo", period_labels, key="keep_tel_period")
+        period_code = TELEMETRY_PERIOD_CHOICES[period_label]
+        auto_refresh = top[2].checkbox("Auto", key="keep_tel_auto", help="Atualiza so a area de leituras.")
+
+        with top[3].popover("Personalizar painel", use_container_width=True):
+            st.caption("Escolha o que aparece nesta tela.")
+            show = {}
+            for section_id, section_label, section_default in TELEMETRY_PANEL_SECTIONS:
+                show[section_id] = st.checkbox(section_label, key=f"keep_tp_{section_id}")
+            refresh_seconds = st.number_input(
+                "Atualizar a cada (s)", min_value=2, max_value=60, step=1, key="keep_tel_seconds"
+            )
+            st.button("Restaurar padrao", on_click=reset_telemetry_panel, key="tp_reset")
+
+        start_iso = end_iso = None
+        range_ready = True
+        if period_code == "custom":
+            today_local = datetime.now(LOCAL_TZ).date()
+            st.session_state.setdefault("keep_tel_range", (today_local - timedelta(days=1), today_local))
+            picked = st.date_input(
+                "Intervalo (horario local)",
+                max_value=today_local,
+                key="keep_tel_range",
+            )
+            days = list(picked) if isinstance(picked, (list, tuple)) else [picked]
+            if len(days) == 2:
+                start_dt = datetime.combine(days[0], time_cls.min).replace(tzinfo=LOCAL_TZ)
+                end_dt = datetime.combine(days[1], time_cls.max).replace(tzinfo=LOCAL_TZ)
+                start_iso = start_dt.astimezone(timezone.utc).isoformat()
+                end_iso = end_dt.astimezone(timezone.utc).isoformat()
+            else:
+                range_ready = False
+                st.info("Escolha a data final do intervalo.")
+
+        def _render_telemetry_live(equipment_id, period_code, start_iso, end_iso, show):
+            # Fragmento: com "Auto" ligado, so este bloco recarrega a cada N segundos
+            # (st.fragment run_every), sem time.sleep/st.rerun nem travar o resto da pagina.
+            base_url = f"{API_BASE_URL}/api/v1/equipments/{equipment_id}"
+            history_url = f"{base_url}/telemetry/history?period={period_code}&limit=5000"
+            if period_code == "custom" and start_iso and end_iso:
+                history_url += f"&start={quote(start_iso, safe='')}&end={quote(end_iso, safe='')}"
+            events_period = period_code if period_code in TELEMETRY_EVENT_PERIODS else "all"
+            ok_latest, latest_data = get_json(f"{base_url}/telemetry/latest")
+            ok_history, history_data = get_json(history_url)
+            ok_events, events_data = get_json(f"{base_url}/iot-events?period={events_period}&limit=1000")
+
+            latest = latest_data.get("telemetry") if ok_latest and isinstance(latest_data, dict) else None
+            hist_df = (
+                any_to_dataframe(history_data.get("history", [])) if ok_history and isinstance(history_data, dict) else pd.DataFrame()
+            )
+            events = events_data.get("events", []) if ok_events and isinstance(events_data, dict) else []
+
+            if not latest:
+                st.info("Ainda nao ha telemetria IoT para este equipamento.")
+            else:
+                if show.get("status"):
+                    status_text = str(latest_data.get("device_status", latest.get("telemetry_status", "-")))
+                    status_tone = (
+                        "ok" if status_text.lower() in {"live", "online", "active"}
+                        else "warn" if status_text.lower() == "stale" else "bad"
                     )
-                    q3.metric("MPU inclinacao", format_measurement(latest.get("inclination_deg"), "deg"))
-
-                    s1, s2, s3 = st.columns(3)
-                    s1.metric("MPU movimento", format_measurement(latest.get("movement_anomaly_score"), "score"))
-                    s2.metric("MPU impacto", "SIM" if latest.get("possible_impact") else "NAO")
-                    ultrasonic_model = latest.get("ultrasonic_sensor_model") or "Ultrassonico"
+                    risk_score = _finite(latest.get("risk_score"))
+                    render_mini_tiles(
+                        [
+                            ("ESP32", latest.get("device_id", "-"), ""),
+                            ("Status", status_text, status_tone),
+                            ("Ultimo dado", "ha " + format_duration_hm(latest.get("telemetry_age_seconds") or 0), ""),
+                            (
+                                "Risco",
+                                f"{risk_score:.0f} - {latest.get('risk_level', '-')}" if risk_score is not None else str(latest.get("risk_level", "-")),
+                                risk_tone(latest.get("risk_level")),
+                            ),
+                            ("Qualidade do dado", latest.get("data_quality_status", "-"), ""),
+                        ]
+                    )
+                if show.get("trator"):
+                    st.markdown("#### Movimento do trator")
+                    render_tractor_3d(latest, hist_df)
+                if show.get("sensores"):
                     if latest.get("distance_cm") is None and latest.get("obstacle_detected") is False:
-                        s3.metric(f"{ultrasonic_model} distancia", "Fora de alcance")
+                        distance_text = "Fora de alcance"
                     else:
-                        s3.metric(f"{ultrasonic_model} distancia", format_measurement(latest.get("distance_cm"), "cm"))
-
-                    e1, e2, e3 = st.columns(3)
-                    e1.metric("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2))
-                    e2.metric("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"))
-                    e3.metric("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D")
-
-                    o1, o2, o3 = st.columns(3)
-                    o1.metric("Qualidade", latest.get("data_quality_status", "-"))
-                    o2.metric("Confianca", format_measurement(latest.get("confidence_score"), "%"))
-                    obstacle_status = "Detectado" if latest.get("obstacle_detected") else "Sem alerta"
-                    if latest.get("distance_cm") is None and latest.get("obstacle_detected") is not False:
-                        obstacle_status = "N/D"
-                    o3.metric("Obstaculo ultrassonico", obstacle_status)
-
+                        distance_text = format_measurement(latest.get("distance_cm"), "cm")
+                    render_mini_tiles(
+                        [
+                            ("Inclinacao", format_measurement(latest.get("inclination_deg"), "deg"), ""),
+                            (
+                                "Pitch / Roll",
+                                f"{format_measurement(latest.get('pitch'), 'deg')} / {format_measurement(latest.get('roll'), 'deg')}",
+                                "",
+                            ),
+                            ("Obstaculo (ultrassom)", distance_text, "bad" if latest.get("obstacle_detected") else ""),
+                            ("Impacto", "SIM" if latest.get("possible_impact") else "NAO", "bad" if latest.get("possible_impact") else "ok"),
+                            ("Movimento anomalo", format_measurement(latest.get("movement_anomaly_score"), "", 2), ""),
+                            ("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2), ""),
+                        ]
+                    )
+                if show.get("ambiente"):
+                    st.markdown("#### Ambiente (BME280)")
+                    render_mini_tiles(
+                        [
+                            ("Temperatura", format_measurement(latest.get("temperature_c"), "C"), ""),
+                            ("Umidade", format_measurement(latest.get("humidity_pct"), "%"), ""),
+                            ("Pressao", format_measurement(latest.get("pressure_hpa"), "hPa"), ""),
+                            ("Altitude", format_measurement(latest.get("altitude_m"), "m"), ""),
+                        ]
+                    )
+                if show.get("movimento_cru"):
+                    st.markdown("#### Aceleracao e giroscopio")
+                    render_mini_tiles(
+                        [
+                            ("Accel X", format_measurement(latest.get("accel_x"), "m/s2", 2), ""),
+                            ("Accel Y", format_measurement(latest.get("accel_y"), "m/s2", 2), ""),
+                            ("Accel Z", format_measurement(latest.get("accel_z"), "m/s2", 2), ""),
+                            ("Accel total", format_measurement(latest.get("acceleration_magnitude"), "m/s2", 2), ""),
+                            ("Giro X", format_measurement(latest.get("gyro_x"), "dps", 1), ""),
+                            ("Giro Y", format_measurement(latest.get("gyro_y"), "dps", 1), ""),
+                            ("Giro Z", format_measurement(latest.get("gyro_z"), "dps", 1), ""),
+                            ("Giro total", format_measurement(latest.get("gyro_magnitude"), "dps", 1), ""),
+                        ]
+                    )
+                if show.get("gps_energia"):
+                    st.markdown("#### GPS e bateria")
+                    render_mini_tiles(
+                        [
+                            ("Bateria", format_measurement(latest.get("battery_voltage"), "V", 2), ""),
+                            ("Precisao GPS", format_measurement(latest.get("gps_accuracy_m"), "m"), ""),
+                            ("Satelites GPS", latest.get("gps_satellites") if latest.get("gps_satellites") is not None else "N/D", ""),
+                            ("Latitude", format_measurement(latest.get("latitude"), "", 6), ""),
+                            ("Longitude", format_measurement(latest.get("longitude"), "", 6), ""),
+                        ]
+                    )
+                if show.get("qualidade"):
+                    st.markdown("#### Qualidade do dado")
+                    render_mini_tiles(
+                        [
+                            ("Qualidade", latest.get("data_quality_status", "-"), ""),
+                            ("Confianca", format_measurement(latest.get("confidence_score"), "%"), ""),
+                            ("Qualidade do horario", latest.get("time_quality") or "N/D", ""),
+                            ("Origem do envio", latest.get("ingestion_mode") or "N/D", ""),
+                        ]
+                    )
                     issues = latest.get("data_quality_issues") or []
                     if issues:
                         st.caption("Qualidade: " + " | ".join(str(issue) for issue in issues))
@@ -2218,96 +3202,53 @@ if "Telemetria" in tab_map:
                         f"Recebido: {format_local_time(latest.get('received_at'))} ({LOCAL_TZ_LABEL}) | "
                         f"Origem: {'ESP32 fisico' if latest.get('iot_device_id') else 'legado'}"
                     )
-
+                if show.get("ia"):
                     explanation = latest.get("explanation") or {}
+                    st.markdown("#### Explicacao da IA")
                     if explanation:
-                        st.markdown("#### Explicacao da IA")
                         st.info(explanation.get("summary", "Sem resumo."))
                         if explanation.get("recommendation"):
                             st.caption(f"Recomendacao: {explanation['recommendation']}")
                         factors = explanation.get("factors", [])
                         if factors:
                             st.dataframe(any_to_dataframe(factors), use_container_width=True)
-                else:
-                    st.info("Ainda nao ha telemetria IoT para este equipamento.")
-
-                render_connectivity_timeline(latest.get("device_id") if latest else None, period_code)
-
-                if ok_history and isinstance(history_data, dict):
-                    hist_df = any_to_dataframe(history_data.get("history", []))
-                    st.markdown("#### Historico")
-                    st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
-                    if not hist_df.empty:
-                        time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
-                        render_metric_explorer(hist_df, time_col, f"tel_{equipment_id}")
-                        if "time_quality" in hist_df.columns:
-                            approximate = int(hist_df["time_quality"].isin(["estimated", "unknown"]).sum())
-                            if approximate:
-                                st.caption(
-                                    f"{approximate} leitura(s) com horario estimado ou desconhecido "
-                                    "(coluna time_quality); o grafico as posiciona pelo horario registrado."
-                                )
-                        with st.expander(f"Tabela de leituras ({len(hist_df)} linhas)"):
-                            st.dataframe(hist_df, use_container_width=True)
-                        bme_cols = [
-                            col
-                            for col in ["temperature_c", "humidity_pct", "pressure_hpa", "battery_voltage"]
-                            if col in hist_df.columns
-                        ]
-                        motion_cols = [
-                            col
-                            for col in [
-                                "distance_cm",
-                                "accel_x",
-                                "accel_y",
-                                "accel_z",
-                                "acceleration_magnitude",
-                                "inclination_deg",
-                                "movement_anomaly_score",
-                                "risk_score",
-                            ]
-                            if col in hist_df.columns
-                        ]
-                        def _numeric_chart_frame(frame, columns):
-                            # Colunas sem medicao (ex.: bateria N/D) chegam como None/texto e
-                            # quebram st.line_chart com "mixed types"; converte e descarta as vazias.
-                            numeric = frame[columns].apply(pd.to_numeric, errors="coerce")
-                            numeric = numeric.dropna(axis=1, how="all")
-                            numeric.index = frame[time_col]
-                            return numeric
-
-                        if time_col in hist_df.columns and bme_cols:
-                            env_chart = _numeric_chart_frame(hist_df, bme_cols)
-                            if not env_chart.empty and len(env_chart.columns) > 0:
-                                st.caption("Ambiente e bateria no periodo")
-                                st.line_chart(env_chart)
-                        if time_col in hist_df.columns and motion_cols:
-                            motion_chart = _numeric_chart_frame(hist_df, motion_cols)
-                            if not motion_chart.empty and len(motion_chart.columns) > 0:
-                                st.caption("Ultrassonico, MPU-6050 e risco no periodo")
-                                st.line_chart(motion_chart)
                     else:
-                        st.info("Sem historico no periodo selecionado.")
-                else:
-                    show_api_error("Erro ao carregar historico de telemetria", history_data)
+                        st.caption("Sem explicacao para a leitura mais recente.")
 
-                if ok_events and isinstance(events_data, dict):
-                    events = events_data.get("events", [])
-                    if events:
-                        st.markdown("#### Eventos IoT")
-                        st.caption(f"Horarios no fuso {LOCAL_TZ_LABEL} (horario de Brasilia).")
-                        st.dataframe(any_to_dataframe(events), use_container_width=True)
+                if show.get("conectividade"):
+                    render_connectivity_timeline(
+                        latest.get("device_id"), period_code if period_code in TELEMETRY_PERIOD_HOURS else "24h"
+                    )
 
-
-            if auto_refresh:
-                st.fragment(run_every=int(refresh_seconds))(_render_telemetry_live)(
-                    selected_equipment_id, period_map[period_label]
-                )
+            if not ok_history:
+                show_api_error("Erro ao carregar historico de telemetria", history_data)
+            elif hist_df.empty:
+                st.info("Sem leituras no periodo selecionado.")
             else:
-                _render_telemetry_live(selected_equipment_id, period_map[period_label])
+                time_col = "recorded_at" if "recorded_at" in hist_df.columns else "timestamp"
+                if show.get("grafico"):
+                    render_metric_explorer(hist_df, time_col, f"tel_{equipment_id}")
+                    if "time_quality" in hist_df.columns:
+                        approximate = int(hist_df["time_quality"].isin(["estimated", "unknown"]).sum())
+                        if approximate:
+                            st.caption(
+                                f"{approximate} leitura(s) com horario estimado ou desconhecido "
+                                "(coluna time_quality); o grafico as posiciona pelo horario registrado."
+                            )
+                if show.get("leituras"):
+                    st.markdown("#### Leituras do equipamento")
+                    render_readings_table(hist_df, events, events_truncated=len(events) >= 1000)
 
-if "Equipamentos" in tab_map:
-    with tab_map["Equipamentos"]:
+        if range_ready:
+            live_args = (selected_equipment_id, period_code, start_iso, end_iso, show)
+            if auto_refresh:
+                st.fragment(run_every=int(refresh_seconds))(_render_telemetry_live)(*live_args)
+            else:
+                _render_telemetry_live(*live_args)
+
+
+if active_page == "Equipamentos":
+    if active_page == "Equipamentos":
         st.markdown("### Equipamentos e Dispositivos IoT")
         onboarding_message = st.session_state.pop("iot_onboarding_message", None)
         if onboarding_message:
@@ -2315,7 +3256,7 @@ if "Equipamentos" in tab_map:
 
         ok_farms, farm_rows = get_json(FARMS_URL)
         if ok_farms:
-            farm_df = any_to_dataframe(farm_rows)
+            farm_df = filter_df_by_farm(any_to_dataframe(farm_rows), kind="farm")
             st.markdown("#### Fazendas")
             st.dataframe(farm_df, use_container_width=True)
         else:
@@ -2324,7 +3265,7 @@ if "Equipamentos" in tab_map:
 
         ok_equipment, equipment_rows = get_json(EQUIPMENTS_URL)
         if ok_equipment:
-            equipment_df = any_to_dataframe(equipment_rows)
+            equipment_df = filter_df_by_farm(any_to_dataframe(equipment_rows))
             st.markdown("#### Equipamentos")
             st.dataframe(equipment_df, use_container_width=True)
         else:
@@ -2483,8 +3424,8 @@ if "Equipamentos" in tab_map:
                         else:
                             show_api_error("Erro ao desativar dispositivo", delete_result)
 
-if "Alertas e auditoria" in tab_map:
-    with tab_map["Alertas e auditoria"]:
+if active_page == "Alertas e auditoria":
+    if active_page == "Alertas e auditoria":
         st.markdown("### Alertas e auditoria")
 
         col_alerts, col_audit = st.columns(2)
@@ -2494,11 +3435,40 @@ if "Alertas e auditoria" in tab_map:
             st.markdown("#### Alertas recentes")
 
             if ok_alerts:
-                df_alerts = any_to_dataframe(alerts_data)
-                if not df_alerts.empty:
-                    st.dataframe(df_alerts, use_container_width=True)
+                alert_rows = filter_rows_by_farm(alerts_data) if isinstance(alerts_data, list) else alerts_data
+                if isinstance(alert_rows, list) and alert_rows:
+                    severity_counts: dict[str, int] = {}
+                    for alert in alert_rows:
+                        key = str(alert.get("severity", "low")).lower() if isinstance(alert, dict) else "low"
+                        severity_counts[key] = severity_counts.get(key, 0) + 1
+                    render_mini_tiles(
+                        [
+                            ("Total de alertas", len(alert_rows), ""),
+                            ("Alta gravidade", severity_counts.get("high", 0), "bad" if severity_counts.get("high") else "ok"),
+                            ("Media", severity_counts.get("medium", 0), "warn" if severity_counts.get("medium") else ""),
+                            ("Baixa", severity_counts.get("low", 0), ""),
+                        ]
+                    )
+                    if len(alert_rows) > 5:
+                        with st.container(height=480):
+                            render_alert_cards(alert_rows, limit=30)
+                    else:
+                        render_alert_cards(alert_rows, limit=5)
                 else:
                     st.info("Nenhum alerta retornado.")
+                df_alerts = any_to_dataframe(alert_rows)
+                with st.expander(f"Todos os alertas registrados ({len(df_alerts)})", expanded=False):
+                    if df_alerts.empty:
+                        st.info("Nenhum alerta registrado.")
+                    else:
+                        st.dataframe(df_alerts, use_container_width=True, hide_index=True)
+                        st.download_button(
+                            "Baixar CSV dos alertas",
+                            df_alerts.to_csv(index=False).encode("utf-8-sig"),
+                            file_name="alertas.csv",
+                            mime="text/csv",
+                            key="alerts_download",
+                        )
             else:
                 show_api_error("Erro ao carregar alertas", alerts_data)
 
@@ -2515,8 +3485,8 @@ if "Alertas e auditoria" in tab_map:
             else:
                 show_api_error("Erro ao carregar auditoria", audit_data)
 
-if "Políticas de alerta" in tab_map:
-    with tab_map["Políticas de alerta"]:
+if active_page == "Políticas de alerta":
+    if active_page == "Políticas de alerta":
         st.markdown("### Políticas de alerta")
 
         ok_policies, policies_data = get_json(POLICIES_URL)
@@ -2624,14 +3594,19 @@ if "Políticas de alerta" in tab_map:
                 else:
                     show_api_error("Erro ao atualizar política", update_data)
 
-if "Administracao" in tab_map:
-    with tab_map["Administracao"]:
+if active_page == "Administracao":
+    if active_page == "Administracao":
         st.markdown("### Administracao de usuarios")
 
         ok_roles, roles_data = get_json(ADMIN_ROLES_URL)
         ok_permissions, permissions_data = get_json(ADMIN_PERMISSIONS_URL)
         role_options = [row.get("name") for row in roles_data] if ok_roles and isinstance(roles_data, list) else []
         permission_options = [row.get("code") for row in permissions_data] if ok_permissions and isinstance(permissions_data, list) else []
+        permission_descriptions = (
+            {row.get("code"): row.get("description") or "" for row in permissions_data}
+            if ok_permissions and isinstance(permissions_data, list)
+            else {}
+        )
 
         filter_cols = st.columns(4)
         user_q = filter_cols[0].text_input("Busca", key="admin_user_q")
@@ -2656,7 +3631,10 @@ if "Administracao" in tab_map:
             show_api_error("Erro ao carregar usuarios", users_data)
             users_df = pd.DataFrame()
 
-        with st.expander("Novo usuario", expanded=False):
+        # Abas (e nao expanders) porque as listas de permissoes ja sao expanders e o Streamlit nao permite aninhar.
+        admin_tab_new, admin_tab_edit = st.tabs(["Novo usuario", "Editar usuario"])
+
+        with admin_tab_new:
             with st.form("admin_create_user_form"):
                 c1, c2, c3 = st.columns(3)
                 new_name = c1.text_input("Nome", value="Novo Usuario")
@@ -2664,12 +3642,36 @@ if "Administracao" in tab_map:
                 new_email = c3.text_input("Email", value="novo.usuario@agroguardian.ai")
                 new_password = st.text_input("Senha inicial", type="password")
                 new_roles = st.multiselect("Roles", role_options, default=["LEITURA"] if "LEITURA" in role_options else role_options[:1])
-                add_permissions = st.multiselect("Permissoes adicionais", permission_options, key="new_permissions_add")
-                remove_permissions = st.multiselect("Permissoes removidas", permission_options, key="new_permissions_remove")
+                add_permissions = render_permission_checklist(
+                    "Permissoes adicionais",
+                    "new_perm_add",
+                    permission_options,
+                    permission_descriptions,
+                    help_text="Concedidas alem das que o perfil (role) ja inclui.",
+                )
+                remove_permissions = render_permission_checklist(
+                    "Permissoes removidas",
+                    "new_perm_remove",
+                    permission_options,
+                    permission_descriptions,
+                    help_text="Retiradas do usuario mesmo que o perfil (role) as inclua.",
+                )
+                st.markdown("**Restringir acesso a dados (opcional)**")
+                st.caption(
+                    "Deixe em branco para o usuario ver todos os dados permitidos pelo perfil. "
+                    "Preencha para limita-lo a um cliente, fazenda ou equipamento especifico; "
+                    "administradores nao sao afetados."
+                )
                 scope_cols = st.columns(3)
-                scope_client = scope_cols[0].text_input("Cliente autorizado", value="")
-                scope_farm = scope_cols[1].number_input("Farm ID autorizado", min_value=0, value=0, step=1)
-                scope_equipment = scope_cols[2].number_input("Equipment ID autorizado", min_value=0, value=0, step=1)
+                scope_client = scope_cols[0].text_input(
+                    "Limitar ao cliente (nome)", value="", help="Ex.: nome do cliente/empresa dono das fazendas."
+                )
+                scope_farm = scope_cols[1].number_input(
+                    "Limitar a fazenda (ID)", min_value=0, value=0, step=1, help="0 = sem restricao por fazenda."
+                )
+                scope_equipment = scope_cols[2].number_input(
+                    "Limitar ao equipamento (ID)", min_value=0, value=0, step=1, help="0 = sem restricao por equipamento."
+                )
                 create_user_submit = st.form_submit_button("Criar usuario")
             if create_user_submit:
                 scopes = []
@@ -2700,8 +3702,10 @@ if "Administracao" in tab_map:
                 else:
                     show_api_error("Erro ao criar usuario", create_result)
 
-        if ok_users and not users_df.empty:
-            with st.expander("Editar usuario", expanded=False):
+        with admin_tab_edit:
+            if not (ok_users and not users_df.empty):
+                st.info("Nenhum usuario carregado para editar.")
+            if ok_users and not users_df.empty:
                 user_options = [
                     f"{int(row['id'])} - {row.get('username', '-')}"
                     for _, row in users_df.iterrows()
@@ -2720,8 +3724,22 @@ if "Administracao" in tab_map:
                     edit_username = e2.text_input("Login", value=str(selected_row.get("username", "")))
                     edit_email = e3.text_input("Email", value=str(selected_row.get("email", "")))
                     edit_roles = st.multiselect("Roles", role_options, default=current_roles)
-                    edit_add_permissions = st.multiselect("Permissoes adicionadas", permission_options, default=current_permissions, key="edit_permissions_add")
-                    edit_remove_permissions = st.multiselect("Permissoes removidas", permission_options, default=current_removed, key="edit_permissions_remove")
+                    edit_add_permissions = render_permission_checklist(
+                        "Permissoes adicionadas",
+                        f"edit_perm_add_{selected_user_id}",
+                        permission_options,
+                        permission_descriptions,
+                        selected=current_permissions,
+                        help_text="Concedidas alem das que o perfil (role) ja inclui.",
+                    )
+                    edit_remove_permissions = render_permission_checklist(
+                        "Permissoes removidas",
+                        f"edit_perm_remove_{selected_user_id}",
+                        permission_options,
+                        permission_descriptions,
+                        selected=current_removed,
+                        help_text="Retiradas do usuario mesmo que o perfil (role) as inclua.",
+                    )
                     edit_active = st.checkbox("Ativo", value=bool(selected_row.get("is_active", True)))
                     edit_status = st.selectbox("Status", ["active", "inactive", "deleted"], index=0, key="edit_user_status")
                     edit_password = st.text_input("Nova senha opcional", type="password", key="edit_password_optional")
@@ -2766,7 +3784,7 @@ if "Administracao" in tab_map:
                     else:
                         show_api_error("Erro ao desativar usuario", delete_result)
 
-with tab_map["Simulador de risco"]:
+if active_page == "Simulador de risco":
     st.markdown("### Simulador de risco")
     st.caption("Compare um cenário base com um cenário simulado para tomada de decisão preventiva.")
 
@@ -2980,7 +3998,7 @@ with tab_map["Simulador de risco"]:
             if not ok_sim:
                 show_api_error("Erro no cálculo do cenário simulado", sim_result)
 
-with tab_map["IA e ML"]:
+if active_page == "IA e ML":
     st.markdown("### Inteligência Artificial e Machine Learning")
 
     ok_status, status_data = get_json(ML_STATUS_URL)

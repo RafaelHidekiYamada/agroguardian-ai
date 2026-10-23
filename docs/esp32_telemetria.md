@@ -2,7 +2,9 @@
 
 Use `docs/esp32_integration.md` as the canonical contract. The official sender
 route is `POST /api/v1/telemetry/esp`; the old `/api/v1/iot/telemetry` route is
-compatibility-only. The physical firmware uses these sensor groups:
+compatibility-only. Readings buffered in the ESP32 flash while offline are sent
+in batches to `POST /api/v1/telemetry/esp/batch` (see the "Buffer offline e
+envio em lote" section of `docs/esp32_integration.md`). The physical firmware uses these sensor groups:
 
 - BME280: temperature, air humidity, and pressure in hPa.
 - HC-SR04 or JSN-SR04T: model and obstacle distance in cm.

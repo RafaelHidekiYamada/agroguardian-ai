@@ -976,6 +976,7 @@ UploadResult uploadSingle(const agro::TelemetryRecord& r) {
   if (status == 409 || status == 422) {
     ++failedSends;
     setLastError(response.substring(0, 300));
+    Serial.printf("[HTTP] status %d, resposta da API: %s\n", status, response.substring(0, 300).c_str());
     dropRejectedRecord(r, status);
     return kUploadRetryNow;
   }
@@ -1003,7 +1004,11 @@ UploadResult uploadBatch(const agro::TelemetryRecord* records, size_t count, boo
     if (i > 0) body += ',';
     JsonDocument item;
     buildRecordPayload(item, records[i], true);
-    serializeJson(item, body);
+    // serializeJson(item, body) substituiria o conteudo de body (perdendo o envelope do lote),
+    // entao cada item e serializado em uma String propria e depois anexado.
+    String itemJson;
+    serializeJson(item, itemJson);
+    body += itemJson;
   }
   body += "]}";
 
@@ -1083,6 +1088,10 @@ UploadResult uploadBatch(const agro::TelemetryRecord* records, size_t count, boo
     return kUploadRetryNow;
   }
   if (status == 413 || status == 422) {
+    // O corpo da resposta traz o campo exato recusado (loc/msg do FastAPI).
+    Serial.printf("[HTTP] status %d, resposta da API: %s\n", status, response.substring(0, 300).c_str());
+    Serial.printf("[HTTP] corpo enviado (%u bytes): %s\n", static_cast<unsigned>(body.length()),
+                  body.substring(0, 900).c_str());
     if (count > 1) {
       // Isola o problema: lote menor (ate 1 leitura por vez).
       currentBatchMax = (status == 413) ? count / 2 : 1;
@@ -1092,6 +1101,12 @@ UploadResult uploadBatch(const agro::TelemetryRecord* records, size_t count, boo
     }
     ++failedSends;
     setLastError(response.substring(0, 300));
+    if (status == 422) {
+      // Um 422 do lote pode ser problema do envelope ou do servidor, nao da leitura.
+      // Antes de descartar, tenta o endpoint ao vivo: so e descartada se os dois recusarem.
+      Serial.println("[HTTP] Lote de 1 leitura recusado (422); tentando o endpoint ao vivo antes de descartar.");
+      return uploadSingle(records[0]);
+    }
     dropRejectedRecord(records[0], status);
     return kUploadRetryNow;
   }

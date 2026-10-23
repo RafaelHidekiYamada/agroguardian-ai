@@ -11,7 +11,7 @@ Copie `include/Secrets.example.h` para `include/Secrets.h` e altere a copia:
 ```cpp
 #define AGRO_WIFI_SSID "NOME_EXATO_DA_REDE_2_4_GHZ"
 #define AGRO_WIFI_PASSWORD "SENHA_DA_REDE"
-#define AGROGUARDIAN_API_URL "https://agroguardian-api.onrender.com/api/v1/telemetry/esp"
+#define AGROGUARDIAN_API_URL "https://SEU-SERVICO-API.onrender.com/api/v1/telemetry/esp"
 #define AGROGUARDIAN_DEVICE_ID "DEVICE-ID-CADASTRADO"
 #define AGROGUARDIAN_DEVICE_API_KEY "API_KEY_GERADA_PARA_O_DISPOSITIVO"
 ```
@@ -23,7 +23,8 @@ firmware.
 
 O ESP32 usa Wi-Fi 2,4 GHz e recebe IP por DHCP. Para o Render, nao configure IP
 fixo, IP do computador, IP do ESP, porta do roteador ou redirecionamento. Ele
-faz uma conexao de saida para `agroguardian-api.onrender.com` na porta HTTPS 443.
+faz uma conexao de saida para o hostname publico da API no Render (o da pagina do
+servico `agroguardian-api`, que costuma ter sufixo) na porta HTTPS 443.
 O IP local mostrado no monitor serial serve apenas para abrir a pagina de
 diagnostico na mesma rede.
 
@@ -72,10 +73,23 @@ o MPU-6050 parado para calibrar. Um envio correto mostra HTTP 200, `accepted`, o
 
 Erros 401 indicam Device ID/API key incorretos; 403 indica dispositivo
 desativado ou IDs divergentes; 409 indica vinculo ausente ou reutilizacao da
-sequencia com outro conteudo; 422 indica campo/unidade/faixa de sensor invalida; 429 aguarda o
-tempo indicado pela API. Falhas transitórias e respostas 5xx recebem novas
-tentativas com o mesmo `sequence_number`; a leitura pendente fica em RAM para o
-ciclo seguinte.
+sequencia com outro conteudo; 422 indica campo/unidade/faixa de sensor invalida
+(ou, no `/batch`, corpo JSON invalido); 429 aguarda o tempo indicado pela API.
+O Serial imprime o corpo da resposta nos erros 422/409; o campo exato esta em
+`loc`/`msg`. Falhas transitorias e respostas 5xx mantem a leitura no buffer para
+nova tentativa com o mesmo `sequence_number`.
+
+## Buffer offline (store-and-forward)
+
+Toda leitura e gravada primeiro na particao `telebuf` da flash (`partitions.csv`,
+anel circular de registros de 48 bytes com CRC16). Online, a leitura atual vai
+pelo endpoint ao vivo; sem conexao, o firmware grava uma a cada
+`AGRO_OFFLINE_RECORD_INTERVAL_MS` (8 s, cerca de 3,6 dias de autonomia). Ao
+reconectar, a fila e enviada do mais antigo ao mais novo em lotes de ate 40
+leituras para `POST /api/v1/telemetry/esp/batch`, e so e liberada a parte
+confirmada pelo servidor. Detalhes do contrato e do diagnostico em
+`docs/esp32_integration.md`; para desligar ou reverter, veja
+`REVERTER_BUFFER_FLASH.md`.
 
 ## Dados enviados
 

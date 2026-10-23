@@ -7,7 +7,9 @@
 #define AGRO_WIFI_PASSWORD "SUA_SENHA_WIFI"
 
 // Endpoint publico da API, nao a URL do dashboard e nem um IP local.
-#define AGROGUARDIAN_API_URL "https://agroguardian-api.onrender.com/api/v1/telemetry/esp"
+// Troque SEU-SERVICO-API pelo hostname da pagina do servico agroguardian-api no
+// Render (costuma ter sufixo, por exemplo agroguardian-api-jhhd.onrender.com).
+#define AGROGUARDIAN_API_URL "https://SEU-SERVICO-API.onrender.com/api/v1/telemetry/esp"
 
 // O Device ID deve ser identico ao cadastrado no dashboard, inclusive maiusculas.
 #define AGROGUARDIAN_DEVICE_ID "ESP32-AGRO-001"

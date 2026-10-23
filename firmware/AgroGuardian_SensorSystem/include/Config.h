@@ -98,7 +98,7 @@
 #endif
 // Intervalo de gravacao sem conexao com o servidor (Wi-Fi/NTP/envio falhando).
 // Com a particao atual (463 setores uteis x 85 registros = 39.355 registros):
-//   5 s -> ~2,3 dias | 7 s -> ~3,2 dias | 15 s -> ~6,8 dias | 60 s -> ~27 dias.
+//   5 s -> ~2,3 dias | 7 s -> ~3,2 dias | 8 s -> ~3,6 dias | 15 s -> ~6,8 dias | 60 s -> ~27 dias.
 // Com conexao, a gravacao segue AGRO_SEND_INTERVAL_MS.
 #ifndef AGRO_OFFLINE_RECORD_INTERVAL_MS
 #define AGRO_OFFLINE_RECORD_INTERVAL_MS 8000UL

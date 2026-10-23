@@ -2998,6 +2998,17 @@ def _ingest_iot_batch(
                 )
             break
         results.append(result)
+        if result.result == "rejected":
+            # Visible in the server log so a systematic rejection (e.g. every reading
+            # of a backlog) can be diagnosed without reading the device serial output.
+            logger.warning(
+                "Leitura de lote recusada: device=%s batch=%s sequence=%s permanent=%s reason=%s",
+                device.device_id,
+                batch.batch_id,
+                result.sequence_number,
+                result.permanent,
+                result.reason,
+            )
         if record is not None and context is not None:
             persisted.append((record, context))
 

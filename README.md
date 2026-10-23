@@ -90,6 +90,8 @@ streamlit run dashboard/app.py
 5. Defina `INITIAL_ADMIN_USERNAME`, `INITIAL_ADMIN_EMAIL` e `INITIAL_ADMIN_PASSWORD`, depois execute `python scripts/seed_database.py` uma vez no Render Shell para um banco novo.
 6. Conecte o Render ao GitHub e ative deploy automático.
 
+> **Banco gratuito do Render:** o PostgreSQL do plano Free expira 30 dias depois de criado (e e apagado ao fim da tolerancia, sem backup). Passo a passo para recriar o banco e reapontar `DATABASE_URL`: `docs/esp32_integration.md`, secao "Banco de dados gratuito do Render". O hostname publico da API costuma ter um sufixo (por exemplo `agroguardian-api-jhhd.onrender.com`); use o que aparece na pagina do servico.
+
 ## O que o projeto entrega
 - Score de risco por equipamento, fazenda, região e operação.
 - Alertas por proximidade de água, chuva, velocidade e terreno inclinado.
@@ -137,6 +139,16 @@ desconhecido, desativado ou com API key invalida.
 
 `/api/v1/iot/telemetry` continua como alias de compatibilidade; firmware e
 simulador novos usam `/api/v1/telemetry/esp`.
+
+O firmware guarda as leituras em uma particao da flash enquanto nao ha Wi-Fi ou
+Internet e as envia depois em lotes para:
+
+```bash
+POST /api/v1/telemetry/esp/batch
+```
+
+O envio e idempotente por `sequence_number`. Contrato, capacidade (~3,6 dias a
+8 s por leitura) e diagnostico em `docs/esp32_integration.md`.
 
 ### Administracao e RBAC
 
