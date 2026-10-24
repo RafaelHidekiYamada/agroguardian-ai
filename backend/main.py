@@ -89,6 +89,7 @@ from .reports import (
 )
 from .security import (
     ALL_PERMISSIONS,
+    PAGE_PERMISSIONS,
     DEFAULT_ROLE_PERMISSIONS,
     authenticate_user,
     generate_api_key,
@@ -490,6 +491,30 @@ def _permission_lookup(db: Session) -> dict[str, models.Permission]:
     return {permission.code: permission for permission in db.query(models.Permission).all()}
 
 
+def _ensure_permission_rows(db: Session) -> dict[str, models.Permission]:
+    """Garante que toda permissao conhecida (ex.: page.*) exista no banco.
+
+    As linhas de permissao so eram criadas pelo seed (AUTO_SEED_DEMO); sem elas,
+    overrides por usuario seriam ignorados em silencio.
+    """
+    by_code = _permission_lookup(db)
+    created = False
+    for code in ALL_PERMISSIONS:
+        if code in by_code:
+            continue
+        permission = models.Permission(
+            code=code,
+            name=code.replace(".", " ").replace("_", " ").title(),
+            description=f"Ver a aba {PAGE_PERMISSIONS[code]}" if code in PAGE_PERMISSIONS else code,
+        )
+        db.add(permission)
+        by_code[code] = permission
+        created = True
+    if created:
+        db.flush()
+    return by_code
+
+
 def _sync_user_roles(db: Session, user: models.User, role_names: list[str]) -> None:
     roles = _role_lookup(db)
     normalized_roles = [normalize_role(role) for role in role_names] or ["LEITURA"]
@@ -502,7 +527,7 @@ def _sync_user_permission_overrides(
     permissions_add: list[str] | None,
     permissions_remove: list[str] | None,
 ) -> None:
-    permission_by_code = _permission_lookup(db)
+    permission_by_code = _ensure_permission_rows(db)
     requested: dict[str, bool] = {}
     for code in permissions_add or []:
         if code in permission_by_code:
@@ -1672,6 +1697,8 @@ def admin_permissions(
     current_user=Depends(require_permission("users.view")),
     db: Session = Depends(get_db),
 ):
+    _ensure_permission_rows(db)
+    db.commit()
     permissions = db.query(models.Permission).order_by(models.Permission.code).all()
     return [
         {"id": permission.id, "code": permission.code, "description": permission.description}

@@ -875,6 +875,53 @@ NAV_ADMIN_GROUP = (
     ],
 )
 NAV_DISPLAY = {"Administracao": "Administração", "Políticas de alerta": "Políticas de alerta"}
+
+# Visibilidade de abas por usuario (permissoes "page.*", ver backend/security.py).
+# Usuario sem nenhuma "page.*" ve todas as abas que o perfil permite (legado);
+# com pelo menos uma, ve somente as marcadas. Filtro de interface: a API segue
+# exigindo as permissoes de cada endpoint.
+PAGE_PERMISSION_BY_PAGE = {
+    "Visão Geral": "page.visao_geral",
+    "Operação em tempo real": "page.operacao_tempo_real",
+    "Telemetria": "page.telemetria",
+    "Alertas e auditoria": "page.alertas_auditoria",
+    "Equipamentos": "page.equipamentos",
+    "Resumo executivo": "page.resumo_executivo",
+    "Ranking": "page.ranking",
+    "Risco regional": "page.risco_regional",
+    "Tendências": "page.tendencias",
+    "Simulador de risco": "page.simulador_risco",
+    "IA e ML": "page.ia_ml",
+}
+PAGE_FORM_GROUPS = [(title, [name for name, _ in items]) for title, items in NAV_GROUPS_BASE]
+# Presets de criacao: perfil (role) + abas visiveis.
+USER_PRESETS: dict[str, dict[str, Any]] = {
+    "Personalizado": {
+        "roles": None,
+        "pages": list(PAGE_PERMISSION_BY_PAGE),
+        "about": "Escolha perfil e abas manualmente (todas as abas vem marcadas).",
+    },
+    "Gestor": {
+        "roles": ["GESTOR"],
+        "pages": [
+            "Operação em tempo real",
+            "Telemetria",
+            "Alertas e auditoria",
+            "Equipamentos",
+            "Ranking",
+            "Risco regional",
+            "Tendências",
+            "Simulador de risco",
+        ],
+        "about": "Perfil GESTOR com Ranking, Risco regional, Tendências, Simulador de risco, Telemetria, "
+        "Alertas e auditoria, Equipamentos e Operação em tempo real.",
+    },
+    "Operador": {
+        "roles": ["OPERADOR"],
+        "pages": ["Telemetria", "Equipamentos"],
+        "about": "Perfil OPERADOR vendo apenas Telemetria e Equipamentos.",
+    },
+}
 PAGE_SUBTITLES = {
     "Visão Geral": "Painel completo de gestao de riscos agricolas.",
     "Operação em tempo real": "Simule entradas e calcule o risco operacional.",
@@ -952,11 +999,26 @@ def build_nav_groups() -> tuple[list[tuple[str, list[str]]], list[str]]:
     def allowed(permissions: tuple[str, ...] | None) -> bool:
         return permissions is None or has_any_permission(*permissions)
 
-    groups = []
-    for title, items in NAV_GROUPS_BASE:
-        pages = [name for name, permissions in items if allowed(permissions)]
-        if pages:
-            groups.append((title, pages))
+    user_permissions = set(st.session_state.get("auth_permissions") or [])
+    restrict_pages = any(code.startswith("page.") for code in user_permissions)
+
+    def build(restrict: bool) -> list[tuple[str, list[str]]]:
+        built = []
+        for title, items in NAV_GROUPS_BASE:
+            pages = [
+                name
+                for name, permissions in items
+                if allowed(permissions)
+                and (not restrict or PAGE_PERMISSION_BY_PAGE.get(name) in user_permissions)
+            ]
+            if pages:
+                built.append((title, pages))
+        return built
+
+    groups = build(restrict_pages)
+    if restrict_pages and not groups:
+        # Abas marcadas que o perfil nao permite: nao deixa o usuario sem nenhuma pagina.
+        groups = build(False)
     admin_pages = [name for name, permissions in NAV_ADMIN_GROUP[1] if allowed(permissions)]
     return groups, admin_pages
 
@@ -1154,7 +1216,9 @@ def render_permission_checklist(
     help_text: str = "",
 ) -> list[str]:
     """Lista de permissoes em caixas de marcacao, agrupadas, recolhivel e com descricao de cada uma."""
-    selected_set = set(selected or [])
+    # Permissoes "page.*" (abas) tem seletor proprio; ficam fora desta lista.
+    options = [code for code in options if not str(code).startswith("page.")]
+    selected_set = {code for code in (selected or []) if not str(code).startswith("page.")}
     chosen: list[str] = []
     label = f"{title} ({len(selected_set)} marcada(s) ao abrir)" if selected_set else title
     with st.expander(label, expanded=False):
@@ -1167,13 +1231,56 @@ def render_permission_checklist(
             groups.setdefault(str(code).split(".")[0], []).append(code)
         for group, codes in groups.items():
             st.markdown(f"**{PERMISSION_GROUP_LABELS.get(group, group.title())}**")
-            for code in codes:
-                if st.checkbox(code, value=code in selected_set, key=f"{key_prefix}_{code}"):
-                    chosen.append(code)
-                description = descriptions.get(code)
-                if description:
-                    st.caption(description)
+            # Itens da mesma categoria lado a lado (ate 4 por linha); a descricao fica no "?" de cada item.
+            per_row = 4
+            for start in range(0, len(codes), per_row):
+                row_codes = codes[start : start + per_row]
+                columns = st.columns(per_row)
+                for column, code in zip(columns, row_codes):
+                    with column:
+                        if st.checkbox(
+                            code,
+                            value=code in selected_set,
+                            key=f"{key_prefix}_{code}",
+                            help=descriptions.get(code) or None,
+                        ):
+                            chosen.append(code)
     return chosen
+
+
+def render_page_selector(key_prefix: str, selected_pages: list[str] | None = None) -> list[str]:
+    """Caixas de marcacao das abas visiveis, lado a lado por grupo. Devolve os codigos page.* marcados.
+
+    O estado inicial vem de `st.session_state` (preenchido por `apply_user_preset`); sem estado, usa
+    `selected_pages` (None = todas marcadas).
+    """
+    chosen: list[str] = []
+    for group_title, pages in PAGE_FORM_GROUPS:
+        st.markdown(f"**{group_title}**")
+        per_row = 3
+        for start in range(0, len(pages), per_row):
+            row_pages = pages[start : start + per_row]
+            columns = st.columns(per_row)
+            for column, page in zip(columns, row_pages):
+                code = PAGE_PERMISSION_BY_PAGE[page]
+                key = f"{key_prefix}_{code}"
+                if key not in st.session_state:
+                    st.session_state[key] = True if selected_pages is None else code in selected_pages
+                with column:
+                    if st.checkbox(NAV_DISPLAY.get(page, page), key=key):
+                        chosen.append(code)
+    return chosen
+
+
+def apply_user_preset(preset_key: str, roles_key: str, pages_prefix: str, role_options: list[str]) -> None:
+    """Callback do seletor de preset: preenche perfil (role) e abas dos widgets do formulario."""
+    preset = USER_PRESETS.get(st.session_state.get(preset_key))
+    if not preset:
+        return
+    if preset["roles"]:
+        st.session_state[roles_key] = [role for role in preset["roles"] if role in role_options]
+    for page, code in PAGE_PERMISSION_BY_PAGE.items():
+        st.session_state[f"{pages_prefix}_{code}"] = page in preset["pages"]
 
 
 
@@ -3635,13 +3742,31 @@ if active_page == "Administracao":
         admin_tab_new, admin_tab_edit = st.tabs(["Novo usuario", "Editar usuario"])
 
         with admin_tab_new:
+            # O preset fica fora do formulario: dentro de st.form os widgets so reagem ao enviar.
+            if "new_user_roles" not in st.session_state:
+                st.session_state["new_user_roles"] = ["LEITURA"] if "LEITURA" in role_options else role_options[:1]
+            st.selectbox(
+                "Preset de criação",
+                list(USER_PRESETS),
+                key="new_user_preset",
+                on_change=apply_user_preset,
+                args=("new_user_preset", "new_user_roles", "new_page", role_options),
+                help="Preenche perfil e abas visíveis com uma configuração recomendada. Você pode ajustar depois.",
+            )
+            st.caption(USER_PRESETS[st.session_state.get("new_user_preset", "Personalizado")]["about"])
             with st.form("admin_create_user_form"):
                 c1, c2, c3 = st.columns(3)
                 new_name = c1.text_input("Nome", value="Novo Usuario")
                 new_username = c2.text_input("Login", value="novo.usuario")
                 new_email = c3.text_input("Email", value="novo.usuario@agroguardian.ai")
                 new_password = st.text_input("Senha inicial", type="password")
-                new_roles = st.multiselect("Roles", role_options, default=["LEITURA"] if "LEITURA" in role_options else role_options[:1])
+                new_roles = st.multiselect("Roles", role_options, key="new_user_roles")
+                st.markdown("**Abas visíveis para este usuário**")
+                st.caption(
+                    "O usuário só verá as abas marcadas (e apenas as que o perfil também permite). "
+                    "Marque ao menos uma."
+                )
+                new_pages = render_page_selector("new_page")
                 add_permissions = render_permission_checklist(
                     "Permissoes adicionais",
                     "new_perm_add",
@@ -3673,7 +3798,9 @@ if active_page == "Administracao":
                     "Limitar ao equipamento (ID)", min_value=0, value=0, step=1, help="0 = sem restricao por equipamento."
                 )
                 create_user_submit = st.form_submit_button("Criar usuario")
-            if create_user_submit:
+            if create_user_submit and not new_pages:
+                st.error("Marque ao menos uma aba visível; sem nenhuma, o usuário veria todas.")
+            elif create_user_submit:
                 scopes = []
                 if scope_client or scope_farm or scope_equipment:
                     scopes.append(
@@ -3689,7 +3816,7 @@ if active_page == "Administracao":
                     "email": new_email,
                     "password": new_password,
                     "roles": new_roles,
-                    "permissions_add": add_permissions,
+                    "permissions_add": sorted(set(add_permissions) | set(new_pages)),
                     "permissions_remove": remove_permissions,
                     "access_scopes": scopes,
                     "is_active": True,
@@ -3718,12 +3845,35 @@ if active_page == "Administracao":
                 current_permissions = selected_row.get("explicit_permissions_add") if isinstance(selected_row.get("explicit_permissions_add"), list) else []
                 current_removed = selected_row.get("explicit_permissions_remove") if isinstance(selected_row.get("explicit_permissions_remove"), list) else []
 
+                edit_roles_key = f"edit_user_roles_{selected_user_id}"
+                if edit_roles_key not in st.session_state:
+                    st.session_state[edit_roles_key] = [role for role in current_roles if role in role_options]
+                # Abas hoje liberadas ao usuario (None = nenhuma restricao: todas marcadas).
+                current_pages = [code for code in current_permissions if str(code).startswith("page.")]
+                st.selectbox(
+                    "Aplicar preset",
+                    list(USER_PRESETS),
+                    key=f"edit_user_preset_{selected_user_id}",
+                    on_change=apply_user_preset,
+                    args=(
+                        f"edit_user_preset_{selected_user_id}",
+                        edit_roles_key,
+                        f"edit_page_{selected_user_id}",
+                        role_options,
+                    ),
+                    help="Substitui perfil e abas marcados abaixo; só vale depois de clicar em Salvar alteracoes.",
+                )
                 with st.form("admin_edit_user_form"):
                     e1, e2, e3 = st.columns(3)
                     edit_name = e1.text_input("Nome", value=str(selected_row.get("name", "")))
                     edit_username = e2.text_input("Login", value=str(selected_row.get("username", "")))
                     edit_email = e3.text_input("Email", value=str(selected_row.get("email", "")))
-                    edit_roles = st.multiselect("Roles", role_options, default=current_roles)
+                    edit_roles = st.multiselect("Roles", role_options, key=edit_roles_key)
+                    st.markdown("**Abas visíveis para este usuário**")
+                    edit_pages = render_page_selector(
+                        f"edit_page_{selected_user_id}",
+                        selected_pages=current_pages or None,
+                    )
                     edit_add_permissions = render_permission_checklist(
                         "Permissoes adicionadas",
                         f"edit_perm_add_{selected_user_id}",
@@ -3744,14 +3894,18 @@ if active_page == "Administracao":
                     edit_status = st.selectbox("Status", ["active", "inactive", "deleted"], index=0, key="edit_user_status")
                     edit_password = st.text_input("Nova senha opcional", type="password", key="edit_password_optional")
                     update_user_submit = st.form_submit_button("Salvar alteracoes")
-                if update_user_submit:
+                if update_user_submit and not edit_pages:
+                    st.error("Marque ao menos uma aba visível; sem nenhuma, o usuário veria todas.")
+                elif update_user_submit:
+                    # Aba desmarcada vira "remocao" explicita: a API nao apaga overrides antigos.
+                    unchecked_pages = [code for code in PAGE_PERMISSION_BY_PAGE.values() if code not in edit_pages]
                     payload = {
                         "name": edit_name,
                         "username": edit_username,
                         "email": edit_email,
                         "roles": edit_roles,
-                        "permissions_add": edit_add_permissions,
-                        "permissions_remove": edit_remove_permissions,
+                        "permissions_add": sorted(set(edit_add_permissions) | set(edit_pages)),
+                        "permissions_remove": sorted(set(edit_remove_permissions) | set(unchecked_pages)),
                         "is_active": edit_active,
                         "status": edit_status,
                     }

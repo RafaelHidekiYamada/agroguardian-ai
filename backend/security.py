@@ -117,7 +117,28 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
     },
 }
 
-ALL_PERMISSIONS = sorted({item for values in DEFAULT_ROLE_PERMISSIONS.values() for item in values})
+# Visibilidade de abas do dashboard. Nao entram nos perfis (roles): sao concedidas
+# por usuario (permissions_add). Quem nao tem nenhuma "page.*" ve todas as abas
+# permitidas pelo perfil (comportamento anterior); quem tem pelo menos uma ve apenas
+# as abas marcadas. E um filtro de interface: a API continua exigindo as permissoes
+# de cada endpoint.
+PAGE_PERMISSIONS: dict[str, str] = {
+    "page.visao_geral": "Visão Geral",
+    "page.operacao_tempo_real": "Operação em tempo real",
+    "page.telemetria": "Telemetria",
+    "page.alertas_auditoria": "Alertas e auditoria",
+    "page.equipamentos": "Equipamentos",
+    "page.resumo_executivo": "Resumo executivo",
+    "page.ranking": "Ranking",
+    "page.risco_regional": "Risco regional",
+    "page.tendencias": "Tendências",
+    "page.simulador_risco": "Simulador de risco",
+    "page.ia_ml": "IA e ML",
+}
+
+ALL_PERMISSIONS = sorted(
+    {item for values in DEFAULT_ROLE_PERMISSIONS.values() for item in values} | set(PAGE_PERMISSIONS)
+)
 
 
 def normalize_role(role: str | None) -> str:
